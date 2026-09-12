@@ -1,7 +1,6 @@
 import re
 
 from sqlalchemy import select
-from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from .identity import normalize_phone
@@ -23,17 +22,21 @@ class InboundService:
 
     def handle(self, db: Session, inbound: NormalizedInbound) -> WebhookResult:
         phone = normalize_phone(inbound.phone)
-        company = db.scalar(select(Company).where(Company.whatsapp_instance == inbound.instance))
-        if not company:
-            company = Company(whatsapp_instance=inbound.instance)
-            db.add(company); db.flush()
-        identity = db.scalar(select(PhoneIdentity).where(
-            PhoneIdentity.company_id == company.id, PhoneIdentity.phone_e164 == phone))
+        identity = db.scalar(select(PhoneIdentity).where(PhoneIdentity.phone_e164 == phone))
         if not identity:
+            company = Company()
+            db.add(company); db.flush()
             user = User(company_id=company.id, display_name=inbound.sender_name)
             db.add(user); db.flush()
             identity = PhoneIdentity(company_id=company.id, user_id=user.id, phone_e164=phone)
             db.add(identity); db.flush()
+        else:
+            user = db.get(User, identity.user_id)
+            if user is None or user.company_id != identity.company_id:
+                raise RuntimeError("phone identity has an invalid tenant relationship")
+            company = db.get(Company, user.company_id)
+            if company is None:
+                raise RuntimeError("phone identity references a missing company")
         conversation = db.scalar(select(Conversation).where(
             Conversation.company_id == company.id, Conversation.phone_identity_id == identity.id))
         if not conversation:
