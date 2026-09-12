@@ -5,7 +5,7 @@ from fastapi import Depends, FastAPI, Header, HTTPException, Request
 from sqlalchemy.orm import Session
 
 from .config import Settings, get_settings
-from .database import Base, build_engine, build_session_factory, session_dependency
+from .database import assert_schema_current, build_engine, build_session_factory, session_dependency
 from .evolution import EvolutionWhatsAppTransport, normalize_evolution
 from .llm import DeterministicLLM, OpenAICompatibleLLM
 from .service import InboundService
@@ -22,7 +22,7 @@ def create_app(settings: Settings | None = None, transport=None, llm=None) -> Fa
 
     @asynccontextmanager
     async def lifespan(_: FastAPI):
-        Base.metadata.create_all(engine)
+        assert_schema_current(engine)
         yield
         engine.dispose()
 
@@ -53,4 +53,3 @@ def create_app(settings: Settings | None = None, transport=None, llm=None) -> Fa
 
 
 app = create_app()
-
