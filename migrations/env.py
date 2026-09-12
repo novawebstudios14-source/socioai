@@ -1,12 +1,17 @@
+import os
+
 from alembic import context
 from sqlalchemy import engine_from_config, pool
 
-from socioai.config import get_settings
 from socioai.database import Base
 from socioai import models  # noqa: F401
 
 config = context.config
-config.set_main_option("sqlalchemy.url", get_settings().database_url)
+config.set_main_option(
+    "sqlalchemy.url",
+    config.attributes.get("database_url")
+    or os.getenv("DATABASE_URL", config.get_main_option("sqlalchemy.url")),
+)
 target_metadata = Base.metadata
 
 if context.is_offline_mode():
@@ -21,4 +26,3 @@ else:
         context.configure(connection=connection, target_metadata=target_metadata)
         with context.begin_transaction():
             context.run_migrations()
-
