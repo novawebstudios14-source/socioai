@@ -1,5 +1,8 @@
 from collections.abc import Generator
 
+from alembic.config import Config
+from alembic.migration import MigrationContext
+from alembic.script import ScriptDirectory
 from sqlalchemy import create_engine, event
 from sqlalchemy.orm import DeclarativeBase, Session, sessionmaker
 
@@ -24,6 +27,18 @@ def build_engine(settings: Settings):
 
 def build_session_factory(engine):
     return sessionmaker(bind=engine, expire_on_commit=False)
+
+
+def assert_schema_current(engine, config_path: str = "alembic.ini") -> None:
+    """Fail startup when the database has not been migrated to Alembic head."""
+    expected = ScriptDirectory.from_config(Config(config_path)).get_current_head()
+    with engine.connect() as connection:
+        current = MigrationContext.configure(connection).get_current_revision()
+    if current != expected:
+        raise RuntimeError(
+            f"Database schema is not current (database={current!r}, expected={expected!r}). "
+            "Run 'alembic upgrade head' before starting the application."
+        )
 
 
 def session_dependency(factory) -> Generator[Session, None, None]:
