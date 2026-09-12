@@ -24,3 +24,4 @@ packages = ["src/socioai"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+markers = ["postgres: PostgreSQL migration and constraint integration tests"]
