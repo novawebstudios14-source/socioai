@@ -1,0 +1,2 @@
+"""Sócio IA application package."""
+
