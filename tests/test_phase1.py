@@ -1,5 +1,8 @@
 from pathlib import Path
 
+import pytest
+from alembic import command
+from alembic.config import Config
 from fastapi.testclient import TestClient
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
@@ -15,6 +18,12 @@ class FakeTransport:
     def send_text(self, instance, phone, text): self.sent.append((instance, phone, text))
 
 
+def migrate(settings):
+    config = Config("alembic.ini")
+    config.attributes["database_url"] = settings.database_url
+    command.upgrade(config, "head")
+
+
 def payload(event_id, phone, text, instance="shared-socio-ia"):
     return {"event": "messages.upsert", "instance": instance, "data": {
         "key": {"id": event_id, "remoteJid": f"{phone}@s.whatsapp.net", "fromMe": False},
@@ -24,6 +33,7 @@ def payload(event_id, phone, text, instance="shared-socio-ia"):
 def test_remembers_company_after_restart(tmp_path: Path):
     db_url = f"sqlite:///{tmp_path / 'acceptance.db'}"
     settings = Settings(database_url=db_url, evolution_webhook_secret="secret")
+    migrate(settings)
     transport = FakeTransport()
     with TestClient(create_app(settings, transport=transport)) as client:
         response = client.post("/webhooks/evolution", headers={"x-api-key": "secret"},
@@ -39,6 +49,7 @@ def test_remembers_company_after_restart(tmp_path: Path):
 
 def test_deduplicates_and_isolates_tenants(tmp_path: Path):
     settings = Settings(database_url=f"sqlite:///{tmp_path / 'isolation.db'}")
+    migrate(settings)
     transport = FakeTransport()
     app = create_app(settings, transport=transport)
     with TestClient(app) as client:
@@ -63,6 +74,7 @@ def test_deduplicates_and_isolates_tenants(tmp_path: Path):
 
 def test_database_rejects_cross_tenant_conversation(tmp_path: Path):
     settings = Settings(database_url=f"sqlite:///{tmp_path / 'constraints.db'}")
+    migrate(settings)
     app = create_app(settings, transport=FakeTransport())
     with TestClient(app):
         pass
@@ -84,7 +96,15 @@ def test_database_rejects_cross_tenant_conversation(tmp_path: Path):
 
 def test_rejects_invalid_secret(tmp_path: Path):
     settings = Settings(database_url=f"sqlite:///{tmp_path / 'auth.db'}", evolution_webhook_secret="right")
+    migrate(settings)
     with TestClient(create_app(settings, transport=FakeTransport())) as client:
         response = client.post("/webhooks/evolution", headers={"x-api-key": "wrong"},
                                json=payload("1", "11999999999", "oi"))
         assert response.status_code == 401
+
+
+def test_startup_rejects_unmigrated_database(tmp_path: Path):
+    settings = Settings(database_url=f"sqlite:///{tmp_path / 'missing.db'}")
+    with pytest.raises(RuntimeError, match="alembic upgrade head"):
+        with TestClient(create_app(settings, transport=FakeTransport())):
+            pass
