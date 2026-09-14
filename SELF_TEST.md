@@ -147,7 +147,7 @@ Run after the worker has been up for at least 30 seconds:
 
 ```bash
 curl -fsS https://<your-domain>/health/operational
-curl -fsS https://<your-domain>/health/providers
+curl -fsS https://<your-domain>/health/providers -H "x-admin-key: <ADMIN_API_KEY>"
 docker compose exec api alembic current
 docker compose exec postgres pg_isready -U socioai -d socioai
 docker compose exec postgres psql -U socioai -d socioai \
