@@ -2,7 +2,8 @@ import enum
 import uuid
 from datetime import datetime, timezone
 
-from sqlalchemy import DateTime, Enum, ForeignKey, ForeignKeyConstraint, String, Text, UniqueConstraint
+from pgvector.sqlalchemy import Vector
+from sqlalchemy import DateTime, Enum, ForeignKey, ForeignKeyConstraint, Integer, JSON, String, Text, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column
 
 from .database import Base
@@ -25,6 +26,7 @@ class Company(Base):
     __tablename__ = "companies"
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
     name: Mapped[str | None] = mapped_column(String(200))
+    timezone: Mapped[str] = mapped_column(String(64), default="America/Sao_Paulo")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
 
 
@@ -34,6 +36,7 @@ class User(Base):
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
     company_id: Mapped[str] = mapped_column(ForeignKey("companies.id"), index=True)
     display_name: Mapped[str | None] = mapped_column(String(200))
+    timezone: Mapped[str | None] = mapped_column(String(64))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
 
 
@@ -111,6 +114,8 @@ class Memory(Base):
 class Job(Base):
     __tablename__ = "jobs"
     __table_args__ = (
+        UniqueConstraint("company_id", "id", name="uq_job_company_id"),
+        UniqueConstraint("company_id", "idempotency_key", name="uq_job_idempotency_tenant"),
         ForeignKeyConstraint(
             ["company_id", "message_id"],
             ["messages.company_id", "messages.id"],
@@ -119,7 +124,89 @@ class Job(Base):
     )
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
     company_id: Mapped[str] = mapped_column(ForeignKey("companies.id"), index=True)
-    message_id: Mapped[str] = mapped_column(String(36), unique=True)
+    message_id: Mapped[str | None] = mapped_column(String(36))
+    kind: Mapped[str] = mapped_column(String(40), default="inbound_message", index=True)
+    idempotency_key: Mapped[str] = mapped_column(String(180))
+    payload: Mapped[dict] = mapped_column(JSON, default=dict)
     status: Mapped[str] = mapped_column(String(30), default="queued")
     error: Mapped[str | None] = mapped_column(Text)
+    attempts: Mapped[int] = mapped_column(Integer, default=0)
+    max_attempts: Mapped[int] = mapped_column(Integer, default=3)
+    scheduled_for: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now, index=True)
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
+
+
+class Task(Base):
+    __tablename__ = "tasks"
+    __table_args__ = (UniqueConstraint("company_id", "id", name="uq_task_company_id"),)
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    company_id: Mapped[str] = mapped_column(ForeignKey("companies.id"), index=True)
+    title: Mapped[str] = mapped_column(String(500))
+    status: Mapped[str] = mapped_column(String(30), default="open", index=True)
+    due_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), index=True)
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
+
+
+class Reminder(Base):
+    __tablename__ = "reminders"
+    __table_args__ = (
+        UniqueConstraint("company_id", "id", name="uq_reminder_company_id"),
+        UniqueConstraint("company_id", "idempotency_key", name="uq_reminder_idempotency_tenant"),
+        ForeignKeyConstraint(["company_id", "phone_identity_id"],
+                             ["phone_identities.company_id", "phone_identities.id"],
+                             name="fk_reminder_phone_tenant"),
+    )
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    company_id: Mapped[str] = mapped_column(ForeignKey("companies.id"), index=True)
+    phone_identity_id: Mapped[str] = mapped_column(String(36))
+    transport_instance: Mapped[str] = mapped_column(String(120))
+    text: Mapped[str] = mapped_column(String(1000))
+    due_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
+    status: Mapped[str] = mapped_column(String(30), default="queued", index=True)
+    idempotency_key: Mapped[str] = mapped_column(String(180))
+    sent_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
+
+
+class Document(Base):
+    __tablename__ = "documents"
+    __table_args__ = (
+        UniqueConstraint("company_id", "id", name="uq_document_company_id"),
+        UniqueConstraint("company_id", "sha256", name="uq_document_sha_tenant"),
+    )
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    company_id: Mapped[str] = mapped_column(ForeignKey("companies.id"), index=True)
+    filename: Mapped[str] = mapped_column(String(300))
+    mimetype: Mapped[str] = mapped_column(String(120))
+    sha256: Mapped[str] = mapped_column(String(64))
+    storage_path: Mapped[str] = mapped_column(String(800))
+    status: Mapped[str] = mapped_column(String(30), default="queued", index=True)
+    error: Mapped[str | None] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
+
+
+class DocumentChunk(Base):
+    __tablename__ = "document_chunks"
+    __table_args__ = (
+        ForeignKeyConstraint(["company_id", "document_id"],
+                             ["documents.company_id", "documents.id"],
+                             name="fk_chunk_document_tenant"),
+        UniqueConstraint("document_id", "position", name="uq_chunk_position"),
+    )
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    company_id: Mapped[str] = mapped_column(ForeignKey("companies.id"), index=True)
+    document_id: Mapped[str] = mapped_column(String(36), index=True)
+    position: Mapped[int] = mapped_column(Integer)
+    content: Mapped[str] = mapped_column(Text)
+    embedding: Mapped[list | None] = mapped_column(Vector(384))
+
+
+class UsageEvent(Base):
+    __tablename__ = "usage_events"
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    company_id: Mapped[str] = mapped_column(ForeignKey("companies.id"), index=True)
+    kind: Mapped[str] = mapped_column(String(60), index=True)
+    units: Mapped[int] = mapped_column(Integer, default=1)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now, index=True)

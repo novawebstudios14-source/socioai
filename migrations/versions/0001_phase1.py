@@ -92,7 +92,7 @@ def upgrade():
         sa.ForeignKeyConstraint(["company_id", "message_id"], ["messages.company_id", "messages.id"],
                                 name="fk_job_message_tenant"),
         sa.PrimaryKeyConstraint("id"),
-        sa.UniqueConstraint("message_id"))
+        sa.UniqueConstraint("message_id", name="uq_job_message_id"))
     op.create_index("ix_jobs_company_id", "jobs", ["company_id"])
 
 

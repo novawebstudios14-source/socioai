@@ -1,4 +1,4 @@
-name: Phase 1 CI
+name: Phase 2 CI
 
 on:
   push:
@@ -10,7 +10,7 @@ jobs:
     runs-on: ubuntu-latest
     services:
       postgres:
-        image: postgres:16-alpine
+        image: pgvector/pgvector:pg16
         env:
           POSTGRES_USER: socioai
           POSTGRES_PASSWORD: test
@@ -35,9 +35,10 @@ jobs:
       - name: Validate clean migration cycle
         run: |
           alembic upgrade head
+          alembic check
           alembic downgrade base
           alembic upgrade head
-      - name: Run Phase 1 SQLite tests
+      - name: Run fast tests
         run: pytest -m "not postgres"
       - name: Run PostgreSQL integration test
         run: pytest -m postgres

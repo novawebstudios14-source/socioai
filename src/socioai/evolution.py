@@ -34,14 +34,22 @@ def normalize_evolution(payload: dict[str, Any]) -> NormalizedInbound | None:
     if key.get("fromMe"):
         return None
     message = data.get("message") or {}
-    text = message.get("conversation") or (message.get("extendedTextMessage") or {}).get("text")
+    text = message.get("conversation") or (message.get("extendedTextMessage") or {}).get("text") or ""
+    document = message.get("documentMessage") or {}
+    audio = message.get("audioMessage") or {}
+    media = document or audio
+    message_type = "document" if document else "audio" if audio else "text"
     remote = key.get("remoteJid") or data.get("remoteJid")
     event_id = key.get("id") or data.get("id")
     instance = payload.get("instance") or data.get("instance")
-    if not all((text, remote, event_id, instance)):
+    if not all((remote, event_id, instance)) or (not text and not media):
         return None
     return NormalizedInbound(
         event_id=str(event_id), instance=str(instance), phone=str(remote), text=str(text),
         sender_name=data.get("pushName"),
+        message_type=message_type,
+        media_url=media.get("url"),
+        media_base64=media.get("base64") or data.get("base64"),
+        media_mimetype=media.get("mimetype"),
+        filename=document.get("fileName"),
     )
-

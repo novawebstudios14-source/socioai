@@ -1,24 +1,31 @@
 from contextlib import asynccontextmanager
 from typing import Any
 
-from fastapi import Depends, FastAPI, Header, HTTPException, Request
+from fastapi import Depends, FastAPI, Header, HTTPException
 from sqlalchemy.orm import Session
 
 from .config import Settings, get_settings
 from .database import assert_schema_current, build_engine, build_session_factory, session_dependency
 from .evolution import EvolutionWhatsAppTransport, normalize_evolution
 from .llm import DeterministicLLM, OpenAICompatibleLLM
-from .service import InboundService
+from .media import MediaStore, OpenAICompatibleTranscriber
+from .service import InboundService, UsageLimitExceeded
+from .worker import PersistentWorker
 
 
-def create_app(settings: Settings | None = None, transport=None, llm=None) -> FastAPI:
+def create_app(settings: Settings | None = None, transport=None, llm=None, transcriber=None) -> FastAPI:
     settings = settings or get_settings()
     engine = build_engine(settings)
     factory = build_session_factory(engine)
     transport = transport or EvolutionWhatsAppTransport(settings.evolution_base_url, settings.evolution_api_key)
     llm = llm or (OpenAICompatibleLLM(settings.llm_base_url, settings.llm_api_key, settings.llm_model)
                   if settings.llm_provider == "openai-compatible" else DeterministicLLM())
-    service = InboundService(llm, transport)
+    media_store = MediaStore(settings.data_dir)
+    service = InboundService(llm, transport, media_store, settings.max_messages_per_day)
+    transcriber = transcriber or OpenAICompatibleTranscriber(settings.transcription_base_url,
+                                                              settings.transcription_api_key,
+                                                              settings.transcription_model)
+    worker = PersistentWorker(factory, transport, service, transcriber)
 
     @asynccontextmanager
     async def lifespan(_: FastAPI):
@@ -45,10 +52,15 @@ def create_app(settings: Settings | None = None, transport=None, llm=None) -> Fa
             return {"status": "ignored"}
         try:
             return service.handle(db, inbound)
+        except UsageLimitExceeded as exc:
+            raise HTTPException(429, str(exc)) from exc
         except ValueError as exc:
             raise HTTPException(422, str(exc)) from exc
 
     app.state.engine = engine
+    app.state.session_factory = factory
+    app.state.worker = worker
+    app.state.inbound_service = service
     return app
 
 
