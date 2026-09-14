@@ -11,6 +11,7 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from socioai.config import Settings
+from socioai.evolution import normalize_evolution
 from socioai.main import create_app
 from socioai.models import (Company, CompanyFact, Consent, Opportunity, PaymentEvent,
                             Plan, RecommendationLog, Subscription)
@@ -155,3 +156,16 @@ def test_owner_company_lookup_and_manual_activation(tmp_path):
         assert activated.status_code == 200
         assert activated.json()["status"] == "active"
         assert client.get("/health/providers").status_code == 401
+
+
+def test_evolution_message_level_base64_is_normalized():
+    inbound = normalize_evolution({
+        "event": "messages.upsert", "instance": "socio-ia",
+        "data": {"key": {"id": "audio-real", "remoteJid": "5511999991111@s.whatsapp.net",
+                         "fromMe": False},
+                 "message": {"audioMessage": {"mimetype": "audio/ogg; codecs=opus"},
+                             "base64": "YWJj"}}
+    })
+    assert inbound is not None
+    assert inbound.message_type == "audio"
+    assert inbound.media_base64 == "YWJj"
