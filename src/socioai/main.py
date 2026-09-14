@@ -1,5 +1,9 @@
 from contextlib import asynccontextmanager
+from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any
+
+import httpx
 
 from fastapi import Depends, FastAPI, Header, HTTPException, Request
 from sqlalchemy import func, select
@@ -11,7 +15,7 @@ from .database import assert_schema_current, build_engine, build_session_factory
 from .evolution import EvolutionWhatsAppTransport, normalize_evolution
 from .llm import DeterministicLLM, OpenAICompatibleLLM
 from .media import MediaStore, OpenAICompatibleTranscriber
-from .models import Company, Job, Opportunity, PaymentEvent, Subscription, UsageEvent, User
+from .models import Company, Job, Opportunity, PaymentEvent, PhoneIdentity, Subscription, UsageEvent, User
 from .observability import configure_logging
 from .payments import GenericHmacPaymentProvider, PaymentService
 from .service import InboundService, UsageLimitExceeded
@@ -30,6 +34,7 @@ class OpportunityUpdate(BaseModel):
 
 def create_app(settings: Settings | None = None, transport=None, llm=None, transcriber=None) -> FastAPI:
     settings = settings or get_settings()
+    settings.validate_runtime()
     engine = build_engine(settings)
     factory = build_session_factory(engine)
     transport = transport or EvolutionWhatsAppTransport(settings.evolution_base_url, settings.evolution_api_key)
@@ -67,11 +72,51 @@ def create_app(settings: Settings | None = None, transport=None, llm=None, trans
         failed = db.scalar(select(func.count()).select_from(Job).where(Job.status == "failed"))
         failed_payments = db.scalar(select(func.count()).select_from(PaymentEvent).where(
             PaymentEvent.status == "failed"))
-        return {"status": "degraded" if failed else "ok", "queue": {"queued": queued, "failed": failed},
+        heartbeat = Path(settings.data_dir) / "worker.heartbeat"
+        worker_alive = heartbeat.exists() and (
+            datetime.now(timezone.utc).timestamp() - heartbeat.stat().st_mtime < 30
+        )
+        storage_writable = False
+        try:
+            Path(settings.data_dir).mkdir(parents=True, exist_ok=True)
+            probe = Path(settings.data_dir) / ".write-probe"
+            probe.write_text("ok")
+            probe.unlink()
+            storage_writable = True
+        except OSError:
+            pass
+        degraded = bool(failed) or not storage_writable or (settings.is_deployed and not worker_alive)
+        return {"status": "degraded" if degraded else "ok",
+                "database": "ok", "schema": "head",
+                "storage": "ok" if storage_writable else "failed",
+                "worker": "alive" if worker_alive else "not_observed",
+                "queue": {"queued": queued, "failed": failed},
                 "providers": {"llm": "configured" if settings.llm_api_key else "deterministic",
                               "transcription": "configured" if settings.transcription_api_key else "degraded",
-                              "payment": "configured" if settings.payment_webhook_secret else "degraded"},
+                              "evolution": "configured" if settings.evolution_api_key else "degraded",
+                              "payment": "configured" if settings.payment_webhook_secret else "not_required"},
                 "failed_payment_events": failed_payments}
+
+    @app.get("/health/providers")
+    def provider_health():
+        """Actively verify staging dependencies without exposing credentials."""
+        checks = {}
+        targets = {
+            "llm": (f"{settings.llm_base_url.rstrip('/')}/models",
+                    {"Authorization": f"Bearer {settings.llm_api_key}"}),
+            "transcription": (f"{settings.transcription_base_url.rstrip('/')}/models",
+                              {"Authorization": f"Bearer {settings.transcription_api_key}"}),
+            "evolution": (f"{settings.evolution_base_url.rstrip('/')}/instance/connectionState/{settings.evolution_instance}",
+                          {"apikey": settings.evolution_api_key}),
+        }
+        for name, (url, headers) in targets.items():
+            try:
+                response = httpx.get(url, headers=headers, timeout=10)
+                checks[name] = {"ok": response.is_success, "status_code": response.status_code}
+            except httpx.HTTPError:
+                checks[name] = {"ok": False, "status_code": None}
+        return {"status": "ok" if all(item["ok"] for item in checks.values()) else "degraded",
+                "providers": checks}
 
     @app.post("/webhooks/payments/{provider_name}")
     async def payment_webhook(provider_name: str, request: Request,
@@ -122,6 +167,16 @@ def create_app(settings: Settings | None = None, transport=None, llm=None, trans
                                   for plan, kind, units in by_plan],
                 "opportunities": db.scalar(select(func.count()).select_from(Opportunity)),
                 "failed_jobs": db.scalar(select(func.count()).select_from(Job).where(Job.status == "failed"))}
+
+    @app.get("/internal/companies", dependencies=[Depends(require_admin)])
+    def find_company(phone: str, db: Session = Depends(get_db)):
+        normalized = "".join(character for character in phone if character.isdigit())
+        identity = db.scalar(select(PhoneIdentity).where(PhoneIdentity.phone_e164 == f"+{normalized}"))
+        if not identity:
+            raise HTTPException(404, "phone identity not found")
+        company = db.get(Company, identity.company_id)
+        return {"company_id": company.id, "name": company.name,
+                "onboarding_step": company.onboarding_step, "access_status": company.access_status}
 
     @app.patch("/internal/companies/{company_id}/access", dependencies=[Depends(require_admin)])
     def update_access(company_id: str, update: AccessUpdate, db: Session = Depends(get_db)):
