@@ -21,8 +21,6 @@ services:
     environment:
       DATABASE_CONNECTION_URI: postgresql://socioai:${POSTGRES_PASSWORD}@postgres:5432/evolution
       AUTHENTICATION_API_KEY: ${EVOLUTION_API_KEY}
-    ports:
-      - "127.0.0.1:8080:8080"
 
   api:
     environment: *socioai-local-env
