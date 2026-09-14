@@ -62,6 +62,10 @@ def create_app(settings: Settings | None = None, transport=None, llm=None, trans
     def get_db():
         yield from session_dependency(factory)
 
+    def require_admin(x_admin_key: str | None = Header(default=None)):
+        if not settings.admin_api_key or x_admin_key != settings.admin_api_key:
+            raise HTTPException(401, "invalid admin credential")
+
     @app.get("/health")
     def health():
         return {"status": "ok"}
@@ -97,7 +101,7 @@ def create_app(settings: Settings | None = None, transport=None, llm=None, trans
                               "payment": "configured" if settings.payment_webhook_secret else "not_required"},
                 "failed_payment_events": failed_payments}
 
-    @app.get("/health/providers")
+    @app.get("/health/providers", dependencies=[Depends(require_admin)])
     def provider_health():
         """Actively verify staging dependencies without exposing credentials."""
         checks = {}
@@ -132,10 +136,6 @@ def create_app(settings: Settings | None = None, transport=None, llm=None, trans
             return {"status": event.status, "duplicate": duplicate, "event_id": event.id}
         except ValueError as exc:
             raise HTTPException(400, str(exc)) from exc
-
-    def require_admin(x_admin_key: str | None = Header(default=None)):
-        if not settings.admin_api_key or x_admin_key != settings.admin_api_key:
-            raise HTTPException(401, "invalid admin credential")
 
     @app.get("/internal/opportunities", dependencies=[Depends(require_admin)])
     def list_opportunities(db: Session = Depends(get_db)):
