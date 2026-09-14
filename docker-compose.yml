@@ -35,7 +35,7 @@ services:
       AUTHENTICATION_EXPOSE_IN_FETCH_INSTANCES: "false"
       DATABASE_ENABLED: "true"
       DATABASE_PROVIDER: postgresql
-      DATABASE_CONNECTION_URI: ${EVOLUTION_DATABASE_URL:?set EVOLUTION_DATABASE_URL}
+      DATABASE_CONNECTION_URI: ${EVOLUTION_DATABASE_URL:-}
       DATABASE_SAVE_DATA_INSTANCE: "true"
       DATABASE_SAVE_DATA_NEW_MESSAGE: "true"
       CACHE_REDIS_ENABLED: "true"
@@ -83,9 +83,10 @@ services:
     restart: unless-stopped
 
   caddy:
+    profiles: ["public"]
     image: caddy:2-alpine
     environment:
-      PUBLIC_HOSTNAME: ${PUBLIC_HOSTNAME:?set PUBLIC_HOSTNAME}
+      PUBLIC_HOSTNAME: ${PUBLIC_HOSTNAME:-localhost}
     ports:
       - "80:80"
       - "443:443"
