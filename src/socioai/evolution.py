@@ -49,7 +49,7 @@ def normalize_evolution(payload: dict[str, Any]) -> NormalizedInbound | None:
         sender_name=data.get("pushName"),
         message_type=message_type,
         media_url=media.get("url"),
-        media_base64=media.get("base64") or data.get("base64"),
+        media_base64=media.get("base64") or message.get("base64") or data.get("base64"),
         media_mimetype=media.get("mimetype"),
         filename=document.get("fileName"),
     )
