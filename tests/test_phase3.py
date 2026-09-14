@@ -3,6 +3,7 @@ import hmac
 import json
 from pathlib import Path
 
+import pytest
 from alembic import command
 from alembic.config import Config
 from fastapi.testclient import TestClient
@@ -131,3 +132,26 @@ def test_internal_api_is_protected(tmp_path):
         assert client.get("/internal/opportunities").status_code == 401
         assert client.get("/internal/metrics", headers={"x-admin-key": "wrong"}).status_code == 401
         assert client.get("/internal/opportunities", headers={"x-admin-key": "admin-secret"}).status_code == 200
+
+
+def test_staging_rejects_test_provider_and_missing_credentials():
+    settings = Settings(app_environment="staging")
+    with pytest.raises(RuntimeError, match="Invalid deployed configuration"):
+        settings.validate_runtime()
+
+
+def test_owner_company_lookup_and_manual_activation(tmp_path):
+    _, _, app = setup(tmp_path)
+    with TestClient(app) as client:
+        onboard(client)
+        headers = {"x-admin-key": "admin-secret"}
+        found = client.get("/internal/companies", params={"phone": "55 11 99999-1111"},
+                           headers=headers)
+        assert found.status_code == 200
+        assert found.json()["access_status"] == "trial"
+        company_id = found.json()["company_id"]
+        activated = client.patch(f"/internal/companies/{company_id}/access",
+                                 json={"status": "active"}, headers=headers)
+        assert activated.status_code == 200
+        assert activated.json()["status"] == "active"
+        assert client.get("/health/providers").status_code == 401
