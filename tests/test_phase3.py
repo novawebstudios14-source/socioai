@@ -137,7 +137,7 @@ def test_internal_api_is_protected(tmp_path):
 
 def test_staging_rejects_test_provider_and_missing_credentials():
     settings = Settings(app_environment="staging")
-    with pytest.raises(RuntimeError, match="Invalid deployed configuration"):
+    with pytest.raises(RuntimeError, match="Invalid real-runtime configuration"):
         settings.validate_runtime()
 
 
@@ -169,3 +169,27 @@ def test_evolution_message_level_base64_is_normalized():
     assert inbound is not None
     assert inbound.message_type == "audio"
     assert inbound.media_base64 == "YWJj"
+
+
+def test_local_real_runtime_needs_no_domain_but_rejects_deterministic():
+    settings = Settings(
+        app_environment="local",
+        database_url="postgresql+psycopg://user:pass@postgres/db",
+        evolution_base_url="http://evolution:8080",
+        evolution_api_key="evolution-key",
+        evolution_instance="socio-ia",
+        evolution_webhook_secret="webhook-key",
+        llm_provider="openai-compatible",
+        llm_base_url="https://api.groq.com/openai/v1",
+        llm_api_key="groq-key",
+        llm_model="model",
+        transcription_base_url="https://api.groq.com/openai/v1",
+        transcription_api_key="groq-key",
+        transcription_model="whisper-model",
+        admin_api_key="admin-key",
+        public_base_url="",
+    )
+    settings.validate_runtime()
+    settings.llm_provider = "deterministic"
+    with pytest.raises(RuntimeError, match="LLM_PROVIDER=openai-compatible"):
+        settings.validate_runtime()
