@@ -1,0 +1,33 @@
+x-socioai-local-env: &socioai-local-env
+  APP_ENVIRONMENT: local
+  DATABASE_URL: postgresql+psycopg://socioai:${POSTGRES_PASSWORD}@postgres:5432/socioai
+  DATA_DIR: /app/data
+  EVOLUTION_BASE_URL: http://evolution:8080
+  EVOLUTION_API_KEY: ${EVOLUTION_API_KEY}
+  EVOLUTION_INSTANCE: socio-ia
+  EVOLUTION_WEBHOOK_SECRET: ${EVOLUTION_WEBHOOK_SECRET}
+  LLM_PROVIDER: openai-compatible
+  LLM_BASE_URL: https://api.groq.com/openai/v1
+  LLM_API_KEY: ${GROQ_API_KEY}
+  LLM_MODEL: llama-3.1-8b-instant
+  TRANSCRIPTION_BASE_URL: https://api.groq.com/openai/v1
+  TRANSCRIPTION_API_KEY: ${GROQ_API_KEY}
+  TRANSCRIPTION_MODEL: whisper-large-v3-turbo
+  ADMIN_API_KEY: ${ADMIN_API_KEY}
+  REQUIRE_ONBOARDING: "true"
+
+services:
+  evolution:
+    environment:
+      DATABASE_CONNECTION_URI: postgresql://socioai:${POSTGRES_PASSWORD}@postgres:5432/evolution
+      AUTHENTICATION_API_KEY: ${EVOLUTION_API_KEY}
+    ports:
+      - "127.0.0.1:8080:8080"
+
+  api:
+    environment: *socioai-local-env
+    ports:
+      - "127.0.0.1:8000:8000"
+
+  worker:
+    environment: *socioai-local-env
