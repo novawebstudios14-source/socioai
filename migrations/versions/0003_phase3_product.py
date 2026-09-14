@@ -30,13 +30,13 @@ def upgrade():
                    "active_reminders": 100, "storage_bytes": 524288000, "memory_items": 500}}])
     op.create_table("subscriptions",
         sa.Column("id", sa.String(36), primary_key=True),
-        sa.Column("company_id", sa.String(36), sa.ForeignKey("companies.id"), nullable=False, unique=True),
+        sa.Column("company_id", sa.String(36), sa.ForeignKey("companies.id"), nullable=False),
         sa.Column("plan_code", sa.String(60), sa.ForeignKey("plans.code"), nullable=False),
         sa.Column("status", sa.String(40), nullable=False, server_default="trial"),
         sa.Column("provider", sa.String(60)), sa.Column("external_id", sa.String(180)),
         sa.Column("current_period_end", sa.DateTime(timezone=True)),
         sa.Column("updated_at", sa.DateTime(timezone=True), nullable=False))
-    op.create_index("ix_subscriptions_company_id", "subscriptions", ["company_id"])
+    op.create_index("ix_subscriptions_company_id", "subscriptions", ["company_id"], unique=True)
     op.create_index("ix_subscriptions_status", "subscriptions", ["status"])
 
     op.create_table("consents",
