@@ -1,4 +1,4 @@
-name: Phase 2 CI
+name: Phase 3 CI
 
 on:
   push:

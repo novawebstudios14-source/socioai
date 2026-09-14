@@ -5,7 +5,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from .models import Document, DocumentChunk, Job, Memory, Reminder, Task, now
+from .models import Document, DocumentChunk, Job, Memory, Reminder, Task, UsageEvent, now
 from .media import deterministic_embedding
 
 logger = logging.getLogger("socioai.tools")
@@ -116,6 +116,7 @@ class ToolExecutor:
                   idempotency_key=f"job:{idempotency_key}", payload={"reminder_id": reminder.id},
                   scheduled_for=due_at)
         db.add(job); db.flush(); self._log("create_reminder", company_id, id=reminder.id)
+        db.add(UsageEvent(company_id=company_id, kind="reminder_created"))
         return ToolResult(ok=True, action="create_reminder", data={"id": reminder.id,
             "due_at": due_at.isoformat(), "status": reminder.status})
 

@@ -4,7 +4,7 @@ from datetime import datetime, timedelta, timezone
 from sqlalchemy import select
 
 from .media import TranscriptionProvider, deterministic_embedding, extract_pdf_chunks
-from .models import Document, DocumentChunk, Job, Reminder, now
+from .models import Document, DocumentChunk, Job, Reminder, UsageEvent, now
 from .schemas import NormalizedInbound
 
 logger = logging.getLogger("socioai.worker")
@@ -43,6 +43,7 @@ class PersistentWorker:
                 elif job.kind == "transcribe_audio": self._transcribe_audio(db, job)
                 else: raise ValueError(f"unsupported job kind: {job.kind}")
                 job.status, job.completed_at = "completed", now()
+                db.add(UsageEvent(company_id=job.company_id, kind="successful_job"))
                 db.commit(); return True
             except Exception as exc:
                 logger.exception("job_failed", extra={"job_id": job.id, "kind": job.kind})
@@ -61,6 +62,7 @@ class PersistentWorker:
                         Reminder.company_id == job.company_id,
                         Reminder.id == job.payload.get("reminder_id")))
                     if reminder: reminder.status = "failed"
+                db.add(UsageEvent(company_id=job.company_id, kind="failed_job"))
                 db.commit(); return False
 
     def _send_reminder(self, db, job: Job, at: datetime):
@@ -75,6 +77,7 @@ class PersistentWorker:
         if not identity: raise RuntimeError("reminder phone identity not found")
         self.transport.send_text(reminder.transport_instance, identity.phone_e164,
                                  f"Lembrete: {reminder.text}")
+        db.add(UsageEvent(company_id=job.company_id, kind="outbound_message"))
         reminder.status, reminder.sent_at = "completed", at
 
     def _process_document(self, db, job: Job):

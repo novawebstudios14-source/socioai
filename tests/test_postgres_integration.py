@@ -49,7 +49,8 @@ def test_postgres_migration_and_tenant_constraints():
             with pytest.raises(IntegrityError):
                 db.commit()
         transport = FakeTransport()
-        with TestClient(create_app(Settings(database_url=POSTGRES_URL), transport=transport)) as client:
+        with TestClient(create_app(Settings(database_url=POSTGRES_URL, require_onboarding=False),
+                                   transport=transport)) as client:
             for event_id, phone, company in (
                 ("pg-a", "11999991111", "Alfa"),
                 ("pg-b", "11999992222", "Beta"),

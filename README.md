@@ -1,4 +1,4 @@
-# Sócio IA — Fase 2
+# Sócio IA
 
 MVP multiempresa da Nova Web Studios que recebe mensagens da Evolution API,
 resolve empresa e usuário, persiste conversas e memória no PostgreSQL e responde
@@ -7,6 +7,11 @@ pelo WhatsApp. A camada de transporte e a camada de IA são substituíveis.
 Além da memória conversacional, a Fase 2 inclui ferramentas tenant-scoped,
 memória explícita, tarefas, agenda, lembretes persistentes, worker com retries,
 PDF com pgvector e áudio com provedor de transcrição substituível.
+
+A Fase 3 acrescenta onboarding e consentimento progressivos pelo WhatsApp,
+estados de acesso, planos configuráveis, webhooks de pagamento idempotentes,
+métricas, perfil empresarial com proveniência e oportunidades comerciais que
+só existem quando há evidência rastreável. As APIs internas exigem `x-admin-key`.
 
 ## Executar
 

@@ -34,7 +34,8 @@ class FailingTransport(FakeTransport):
 
 
 def settings_for(tmp_path: Path, name="phase2.db"):
-    settings = Settings(database_url=f"sqlite:///{tmp_path / name}", data_dir=str(tmp_path / "data"))
+    settings = Settings(database_url=f"sqlite:///{tmp_path / name}", data_dir=str(tmp_path / "data"),
+                        require_onboarding=False)
     config = Config("alembic.ini"); config.attributes["database_url"] = settings.database_url
     command.upgrade(config, "head")
     return settings

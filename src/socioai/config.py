@@ -19,6 +19,14 @@ class Settings(BaseSettings):
     transcription_base_url: str = "https://api.openai.com/v1"
     transcription_api_key: str = ""
     transcription_model: str = "whisper-1"
+    require_onboarding: bool = True
+    terms_version: str = "2026-09"
+    privacy_version: str = "2026-09"
+    admin_api_key: str = ""
+    payment_provider: str = "generic"
+    payment_webhook_secret: str = ""
+    recommendation_confidence: float = 0.75
+    recommendation_cooldown_days: int = 30
 
 
 @lru_cache

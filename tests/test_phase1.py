@@ -32,7 +32,7 @@ def payload(event_id, phone, text, instance="shared-socio-ia"):
 
 def test_remembers_company_after_restart(tmp_path: Path):
     db_url = f"sqlite:///{tmp_path / 'acceptance.db'}"
-    settings = Settings(database_url=db_url, evolution_webhook_secret="secret")
+    settings = Settings(database_url=db_url, evolution_webhook_secret="secret", require_onboarding=False)
     migrate(settings)
     transport = FakeTransport()
     with TestClient(create_app(settings, transport=transport)) as client:
@@ -48,7 +48,7 @@ def test_remembers_company_after_restart(tmp_path: Path):
 
 
 def test_deduplicates_and_isolates_tenants(tmp_path: Path):
-    settings = Settings(database_url=f"sqlite:///{tmp_path / 'isolation.db'}")
+    settings = Settings(database_url=f"sqlite:///{tmp_path / 'isolation.db'}", require_onboarding=False)
     migrate(settings)
     transport = FakeTransport()
     app = create_app(settings, transport=transport)
@@ -73,7 +73,7 @@ def test_deduplicates_and_isolates_tenants(tmp_path: Path):
 
 
 def test_database_rejects_cross_tenant_conversation(tmp_path: Path):
-    settings = Settings(database_url=f"sqlite:///{tmp_path / 'constraints.db'}")
+    settings = Settings(database_url=f"sqlite:///{tmp_path / 'constraints.db'}", require_onboarding=False)
     migrate(settings)
     app = create_app(settings, transport=FakeTransport())
     with TestClient(app):
@@ -95,7 +95,8 @@ def test_database_rejects_cross_tenant_conversation(tmp_path: Path):
 
 
 def test_rejects_invalid_secret(tmp_path: Path):
-    settings = Settings(database_url=f"sqlite:///{tmp_path / 'auth.db'}", evolution_webhook_secret="right")
+    settings = Settings(database_url=f"sqlite:///{tmp_path / 'auth.db'}", evolution_webhook_secret="right",
+                        require_onboarding=False)
     migrate(settings)
     with TestClient(create_app(settings, transport=FakeTransport())) as client:
         response = client.post("/webhooks/evolution", headers={"x-api-key": "wrong"},
@@ -104,7 +105,7 @@ def test_rejects_invalid_secret(tmp_path: Path):
 
 
 def test_startup_rejects_unmigrated_database(tmp_path: Path):
-    settings = Settings(database_url=f"sqlite:///{tmp_path / 'missing.db'}")
+    settings = Settings(database_url=f"sqlite:///{tmp_path / 'missing.db'}", require_onboarding=False)
     with pytest.raises(RuntimeError, match="alembic upgrade head"):
         with TestClient(create_app(settings, transport=FakeTransport())):
             pass
