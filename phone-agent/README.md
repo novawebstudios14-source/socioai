@@ -1,46 +1,60 @@
-# Agente de voz Twilio — protótipo em português
+# Nova Voice Commands
 
-Hospedagem: Render Free. O modelo de IA precisa ser conectado por LLM_BASE_URL, LLM_MODEL e LLM_API_KEY. Sem esses valores, o agente informa que está em teste de telefonia. Ele não tem acesso às ferramentas nem ao histórico do ChatGPT.
+Ponte de comandos por telefone para uma conversa Work do ChatGPT. A chamada usa Twilio Gather/Say em português. O bot de conversa usa Groq; a execução de tarefas acontece no Work, depois da conexão do plugin e da inscrição no evento.
 
-## Estado verificado
+## Uso na ligação
 
-- 12 testes locais passaram.
-- A API Trial aceitou To + Url e criou uma chamada real. Os parâmetros Twiml, From e controles extras haviam sido recusados.
-- O primeiro webhook real foi rejeitado pela validação padrão. A versão atual permite um token individual com validade de três minutos, vinculado a uma chamada criada pelo endpoint de controle. Esse fluxo precisa ser verificado na chamada após a implantação.
+1. Diga: **Comando para o chat: crie um resumo sobre café.**
+2. O assistente lê a transcrição de volta.
+3. Diga **confirmar comando** para registrar e enfileirar o evento, ou **cancelar comando**.
+4. Acompanhe a execução na conversa Work inscrita.
 
-## Hospedagem
+O registro não é descrito como execução concluída. Se o chat ainda não estiver inscrito, a chamada informa isso. Comandos anteriores à inscrição ficam disponíveis em `list_voice_commands`, mas não geram eventos retroativos.
 
-Build: pip install -r phone-agent/requirements.txt
+## Configuração
 
-Start: gunicorn --chdir phone-agent --workers 1 --threads 1 --bind 0.0.0.0:$PORT 'app:create_app()'
+Python 3.12. Instale `pip install -r requirements.txt` e execute `gunicorn --workers 1 --threads 1 --bind 0.0.0.0:$PORT 'app:create_app()'`. No repositório com subdiretório, acrescente `--chdir phone-agent`.
 
-Plano free, uma instância. RENDER_EXTERNAL_URL é detectado automaticamente. Defina GUNICORN_CMD_ARGS=--access-logfile /dev/null para não registrar URLs que contêm tokens individuais.
+Variáveis de telefonia: `TWILIO_ACCOUNT_SID`, `TWILIO_AUTH_TOKEN`, `ALLOWED_PHONES` (lista E.164 separada por vírgula), `CONTROL_API_KEY`, `PUBLIC_URL` (ou `RENDER_EXTERNAL_URL`). Na Trial, o transporte envia apenas To e Url; não atribui número próprio nem elimina os limites da Twilio.
 
-Variáveis: TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN, ALLOWED_PHONES e CONTROL_API_KEY (segredo aleatório de pelo menos 32 bytes). LLM_BASE_URL, LLM_MODEL e LLM_API_KEY conectam o provedor de IA.
+Variáveis de IA: `LLM_BASE_URL=https://api.groq.com/openai/v1`, `LLM_API_KEY`, `LLM_MODEL=openai/gpt-oss-20b`.
 
-## Iniciar chamadas
+Variáveis da ponte:
 
-POST /calls com Authorization: Bearer CONTROL_API_KEY, Content-Type: application/json e Idempotency-Key único de 16 a 80 letras, números, sublinhado ou hífen. Corpo: {"to":"número E.164 autorizado"}.
+| Nome | Valor |
+| --- | --- |
+| `BRIDGE_ENABLED` | `true` habilita comandos na ligação |
+| `BRIDGE_DATABASE_URL` | Internal Database URL do Postgres no mesmo workspace/região Render |
+| `BRIDGE_ENCRYPTION_KEY` | Chave Fernet gerada uma vez; preservar entre deploys |
+| `BRIDGE_FORM_KEY` | Segredo aleatório forte para assinar o consentimento OAuth |
+| `BRIDGE_PAIRING_HASH` | SHA-256 hexadecimal do código privado de conexão |
+| `GUNICORN_CMD_ARGS` | `--access-logfile /dev/null` evita registrar URLs de callbacks com tokens |
 
-O servidor cria uma sessão, chama a Twilio apenas com To e Url e vincula o CallSid retornado à sessão. O endereço individual não é devolvido ao cliente. Repetir a chave de idempotência não inicia outra ligação. Existe limite de uma sessão a cada três minutos por destinatário.
+Não publique segredos no repositório. A ponte não usa SQLite em produção. Sem Postgres configurado, as operações privadas retornam 503 e a chamada não afirma ter salvo/enviado o comando.
 
-O webhook /voice sem token exige assinatura Twilio válida. Os endereços individuais também aceitam o token de sessão de 256 bits, somente para chamada previamente criada pelo endpoint autenticado e dentro da validade de três minutos. Se o callback informar CallSid, To ou AccountSid, esses valores devem corresponder à sessão. Tokens desconhecidos, expirados e sessões sem CallSid são rejeitados.
+## Conexão ao ChatGPT
 
-## Controles e limites
+1. Em ChatGPT Plugins, clique `+` → `Add custom MCP server`.
+2. Nome: `Nova Voice Commands`; endpoint: `https://SEU-SERVICO/mcp`.
+3. Use OAuth, com registro dinâmico de cliente (DCR). A descoberta publica os endpoints e o escopo `voice.commands`.
+4. Autorize usando o código privado de conexão. Instale o plugin e habilite-o na conversa Work.
+5. Peça ao Work para acompanhar `voice.command.confirmed`, sem filtros, e executar os pedidos confirmados nessa conversa. Antes de executar, deve ler e reservar cada comando com um `run_id` único. Finalize registrando o resultado.
+6. Verifique uma confirmação real por telefone e o resultado no chat antes de considerar a integração concluída.
 
-- Destinos autorizados em ALLOWED_PHONES; nenhum endpoint de discagem anônimo.
-- Até sete respostas e encerramento por voz.
-- O aplicativo não solicita gravação de áudio.
-- Texto da conversa fica no SQLite para contexto. O disco do Render Free é efêmero; reinícios podem apagar sessões e interromper chamadas.
-- O Render Free pode suspender por ociosidade. Abra /health antes do teste e aguarde status ok. Não se promete disponibilidade contínua.
-- O Trial Twilio e os provedores de IA têm cotas próprias. Não existe promessa de chamadas gratuitas ilimitadas.
+O servidor implementa MCP Events 2026-07-28, verificação de callback, assinatura Standard Webhooks e uma fila de entrega persistente. A instalação e a inscrição pertencem à conta ChatGPT do usuário; publicar o endpoint não as cria automaticamente.
 
-## Testes
+## Persistência e entrega
 
-Na pasta phone-agent: python -m unittest discover -s tests -v. Os testes não fazem ligações nem acessam IA externa.
+Uma linha de estado cifrada com Fernet guarda comandos, inscrições, tokens OAuth e entregas. Transações Postgres com bloqueio da linha serializam alterações para um único titular. O mesmo comando e evento mantêm IDs estáveis nas tentativas. O worker faz até oito tentativas com atraso exponencial e variação aleatória. Respostas 410/413 não são repetidas. Após falha definitiva, o comando continua consultável; execução interrompida requer revisão humana antes de repetir uma ação externa.
 
-## Referências
+Callbacks exigem HTTPS/443, IPs públicos validados no momento de conexão e certificado TLS para o hostname original. Não há redirecionamentos. A chave de assinatura pode rotacionar com janela de cinco minutos. Inscrições expiram em até sete dias, com padrão de um dia. Revogação OAuth encerra as conexões e inscrições deste único titular.
 
-https://www.twilio.com/docs/usage/trials/try-out-voice
-https://render.com/docs/free
-https://console.groq.com/docs/rate-limits
+O plano Free do Render pode dormir após 15 minutos; o próximo acesso pode demorar cerca de um minuto. O Postgres Free criado em 17/10/2026 expira em **16/11/2026**. Não há garantia de operação permanente gratuita; migre os dados e a chave antes da expiração se quiser manter o serviço.
+
+## Verificação
+
+Execute a partir desta pasta: `python -m unittest discover -s tests -v`.
+
+Os testes cobrem callbacks Twilio assinados e tokens por chamada, deduplicação, confirmação/cancelamento por voz, assinatura e validação do destino, verificação de desafio, persistência após recriação da aplicação, expiração, rotação, retries, reserva e conclusão de comandos, OAuth PKCE, CSRF, uso único dos códigos, refresh e recusa sem armazenamento. Entrega ao ChatGPT real depende de instalar o plugin e concluir a inscrição; testes locais usam receptor simulado e SQLite somente no ambiente de teste.
+
+Documentação: [MCP Events](https://developers.openai.com/plugins/build/mcp-events), [OAuth](https://developers.openai.com/plugins/build/auth), [Conectar plugin](https://developers.openai.com/plugins/deploy/connect-chatgpt), [limites Free Render](https://render.com/docs/free).

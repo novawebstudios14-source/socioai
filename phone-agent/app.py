@@ -13,6 +13,7 @@ from flask import Flask, Response, abort, request
 from twilio.request_validator import RequestValidator
 from twilio.rest import Client
 from twilio.twiml.voice_response import Gather, VoiceResponse
+from bridge import Bridge, voice_command
 
 
 def load_env(path=".env"):
@@ -78,9 +79,12 @@ def create_app(config=None):
     with connect(app):
         pass
 
+    bridge = Bridge(app)
+    app.extensions["voice_bridge"] = bridge
+
     @app.get("/health")
     def health():
-        return {"status": "ok", "ai_configured": bool(os.getenv("LLM_BASE_URL") and os.getenv("LLM_MODEL"))}
+        return {"status": "ok", "ai_configured": bool(os.getenv("LLM_BASE_URL") and os.getenv("LLM_MODEL")), "bridge_configured": bridge.store.ready}
 
     @app.post("/check-ai")
     def check_ai():
@@ -198,15 +202,21 @@ def create_app(config=None):
             messages = json.loads(session["messages"])
             speech = fields.get("SpeechResult", "").strip()[:1500]
             ai_success = False
-            stop = bool(re.search(r"\b(tchau|encerrar|desligar|pare|parar)\b", speech, re.I))
+            command_mode = bool(os.getenv("BRIDGE_ENABLED") == "true" or app.config.get("BRIDGE_ENABLED"))
+            command_text = voice_command(bridge, messages, sid, turn, speech) if command_mode and turn > 0 and speech else None
+            stop = command_text is None and bool(re.search(r"\b(tchau|encerrar|desligar|pare|parar)\b", speech, re.I))
             if turn == 0:
                 text = "Olá. Sou um assistente de inteligência artificial em uma ligação de teste. Você consegue me ouvir bem? Para encerrar, diga desligar."
+                if command_mode:
+                    text = "Olá. Sou seu assistente de inteligência artificial. Para enviar um pedido ao Work, diga comando para o chat, seguido do pedido. Vou ler para você confirmar. Para encerrar, diga desligar."
+            elif command_text is not None:
+                text = command_text
             elif stop:
                 text = "Teste encerrado. Até mais."
             elif speech:
                 messages.append({"role": "user", "content": speech})
                 try:
-                    text = answer(messages)
+                    text = answer([m for m in messages if m.get("role") in ("user", "assistant")])
                     ai_success = bool(os.getenv("LLM_BASE_URL") and os.getenv("LLM_MODEL"))
                 except Exception:
                     app.logger.warning("O provedor de IA não respondeu dentro do teste; sem registrar credenciais ou fala.")
