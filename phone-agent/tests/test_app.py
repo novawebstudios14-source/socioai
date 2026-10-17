@@ -8,6 +8,9 @@ from xml.etree import ElementTree as ET
 from urllib.parse import urlencode
 
 from twilio.request_validator import RequestValidator
+from twilio.rest import Client
+from twilio.http.http_client import TwilioHttpClient
+from twilio.http.response import Response
 from app import connect, create_app, start_call
 
 
@@ -111,7 +114,8 @@ class CallsTest(unittest.TestCase):
             client.return_value.calls.create.return_value.status = "queued"
             start_call(self.app, self.phone)
             kwargs = client.return_value.calls.create.call_args.kwargs
-            self.assertEqual(set(kwargs), {"to", "url"})
+            self.assertEqual(set(kwargs), {"to", "url", "from_"})
+            self.assertIsNone(kwargs["from_"])
             self.assertEqual(kwargs["to"], self.phone)
 
     def test_control_route_requires_auth_and_idempotency(self):
@@ -138,6 +142,15 @@ class CallsTest(unittest.TestCase):
         with connect(self.app) as db:
             db.execute("UPDATE sessions SET expires_at=1 WHERE token=?", (self.token,))
         self.assertEqual(self.client.post(path).status_code, 403)
+
+    def test_sdk_transport_omits_null_from(self):
+        captured = {}
+        class Transport(TwilioHttpClient):
+            def request(self, *args, **kwargs):
+                captured.update(kwargs["data"])
+                return Response(201, '{"sid":"CA00000000000000000000000000000000","status":"queued"}')
+        Client(self.account, "test-secret", http_client=Transport()).calls.create(to=self.phone, from_=None, url="https://example.com/voice/nonce")
+        self.assertEqual(set(captured), {"To", "Url"})
 
 
 if __name__ == "__main__":

@@ -105,13 +105,16 @@ def create_app(config=None):
             db.execute("INSERT INTO sessions(token,phone,messages,expires_at) VALUES(?,?,?,?)", (token, phone, "[]", int(time.time()) + 180))
         try:
             client = Client(app.config["TWILIO_ACCOUNT_SID"], app.config["TWILIO_AUTH_TOKEN"])
-            call = client.calls.create(to=phone, url=app.config["PUBLIC_URL"] + "/voice/" + token)
+            call = client.calls.create(to=phone, from_=None, url=app.config["PUBLIC_URL"] + "/voice/" + token)
             with connect(app) as db:
                 db.execute("UPDATE sessions SET sid=? WHERE token=?", (call.sid, token))
             return {"call_sid": call.sid, "status": call.status}, 201
-        except Exception:
+        except Exception as error:
             # Não refazer automaticamente: pode haver uma chamada criada após timeout.
-            return {"error": "Não foi possível confirmar a criação. Consulte a Twilio antes de repetir."}, 502
+            kind = type(error).__name__
+            code = getattr(error, "code", None)
+            app.logger.warning("call_creation_failed kind=%s provider_code=%s", kind, code)
+            return {"error": "Não foi possível confirmar a criação. Consulte a Twilio antes de repetir.", "kind": kind, "provider_code": code}, 502
 
     @app.route("/voice", defaults={"token": None}, methods=["GET", "POST"])
     @app.route("/voice/<token>", methods=["GET", "POST"])
@@ -227,7 +230,7 @@ def start_call(app, phone):
         db.execute("INSERT INTO sessions (token,phone,messages) VALUES (?,?,?)", (token, phone, "[]"))
     # Sem retries automáticos: evita ligações duplicadas após falhas de rede.
     client = Client(os.environ["TWILIO_ACCOUNT_SID"], os.environ["TWILIO_AUTH_TOKEN"])
-    options = {"to": phone, "url": app.config["PUBLIC_URL"] + "/voice/" + token}
+    options = {"to": phone, "from_": None, "url": app.config["PUBLIC_URL"] + "/voice/" + token}
     if not trial:
         options.update(from_=os.environ["TWILIO_FROM_NUMBER"], method="POST", time_limit=120, timeout=20, record=False)
     # Trial aceita To + Url. From, Twiml e parâmetros extras podem ser recusados.
