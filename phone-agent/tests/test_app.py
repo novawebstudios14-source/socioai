@@ -1,0 +1,108 @@
+import json
+import os
+import tempfile
+import unittest
+from unittest.mock import patch
+from xml.etree import ElementTree as ET
+from urllib.parse import urlencode
+
+from twilio.request_validator import RequestValidator
+from app import connect, create_app, start_call
+
+
+class CallsTest(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.account = "AC" + "1" * 32
+        self.sid = "CA" + "2" * 32
+        self.token = "session-test"
+        self.phone = "+5594999999999"
+        self.app = create_app({"TESTING": True, "DATABASE": self.tmp.name + "/test.sqlite3", "PUBLIC_URL": "https://example.com", "TWILIO_AUTH_TOKEN": "test-secret", "TWILIO_ACCOUNT_SID": self.account})
+        self.client = self.app.test_client()
+        with connect(self.app) as db:
+            db.execute("INSERT INTO sessions(token,phone,messages) VALUES(?,?,?)", (self.token, self.phone, "[]"))
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def send(self, turn=0, speech=None, **extra):
+        fields = {"AccountSid": self.account, "CallSid": self.sid, "To": self.phone}
+        if speech is not None:
+            fields["SpeechResult"] = speech
+        fields.update(extra)
+        path = f"/voice/{self.token}?turn={turn}"
+        signature = RequestValidator("test-secret").compute_signature("https://example.com" + path, fields)
+        return self.client.post(path, data=fields, headers={"X-Twilio-Signature": signature})
+
+    def test_forged_request_denied(self):
+        self.assertEqual(self.client.post("/voice/session-test").status_code, 403)
+
+    def test_signed_get_from_console(self):
+        fields = {"AccountSid": self.account, "CallSid": self.sid, "To": self.phone}
+        path = f"/voice/{self.token}?" + urlencode(fields)
+        signature = RequestValidator("test-secret").compute_signature("https://example.com" + path, {})
+        response = self.client.get(path, headers={"X-Twilio-Signature": signature})
+        self.assertEqual(response.status_code, 200)
+        self.assertIsNotNone(ET.fromstring(response.data).find("Gather"))
+
+    def test_custom_console_url_creates_authorized_session(self):
+        fields = {"AccountSid": self.account, "CallSid": self.sid, "To": self.phone}
+        signature = RequestValidator("test-secret").compute_signature("https://example.com/voice", fields)
+        with patch.dict(os.environ, {"ALLOWED_PHONES": self.phone}):
+            response = self.client.post("/voice", data=fields, headers={"X-Twilio-Signature": signature})
+        self.assertEqual(response.status_code, 200)
+        self.assertIn("/voice/call-" + self.sid, response.get_data(as_text=True))
+
+    def test_greeting_and_duplicate_llm_callback(self):
+        first = self.send()
+        self.assertEqual(first.status_code, 200)
+        root = ET.fromstring(first.data)
+        self.assertEqual(root.find("Gather").get("language"), "pt-BR")
+        with patch("app.answer", return_value="Ouço você bem.") as model:
+            response = self.send(1, "Você me ouve?")
+            duplicate = self.send(1, "Você me ouve?")
+            self.assertEqual(response.data, duplicate.data)
+            self.assertEqual(model.call_count, 1)
+
+    def test_wrong_account_destination_and_call_denied(self):
+        self.assertEqual(self.send(To="+5511999999999").status_code, 403)
+        self.assertEqual(self.send(AccountSid="AC" + "3" * 32).status_code, 403)
+        self.send()
+        self.assertEqual(self.send(1, "oi", CallSid="CA" + "4" * 32).status_code, 403)
+
+    def test_hangup_and_xml_escaping(self):
+        self.send()
+        with patch("app.answer", return_value="Texto <seguro> & correto"):
+            response = self.send(1, "oi")
+            ET.fromstring(response.data)
+            self.assertIn(b"&lt;seguro&gt;", response.data)
+        end = self.send(2, "pode desligar")
+        self.assertIsNotNone(ET.fromstring(end.data).find("Hangup"))
+        self.assertIsNone(ET.fromstring(end.data).find("Gather"))
+
+    def test_limit_and_out_of_order(self):
+        self.assertEqual(self.send(3, "oi").status_code, 409)
+        self.send()
+        with patch("app.answer", return_value="Recebido."):
+            for turn in range(1, 8):
+                response = self.send(turn, "teste")
+                self.assertEqual(response.status_code, 200)
+        self.assertIsNone(ET.fromstring(response.data).find("Gather"))
+        self.assertEqual(self.send(8, "teste").status_code, 400)
+
+    def test_provider_failure_falls_back(self):
+        self.send()
+        with patch("app.answer", side_effect=TimeoutError):
+            response = self.send(1, "teste")
+        self.assertEqual(response.status_code, 200)
+        self.assertIn("indisponível", response.get_data(as_text=True))
+
+    def test_unauthorized_number_never_dials(self):
+        with patch.dict(os.environ, {"ALLOWED_PHONES": self.phone}), patch("app.Client") as client:
+            with self.assertRaises(ValueError):
+                start_call(self.app, "+5511999999999")
+            client.assert_not_called()
+
+
+if __name__ == "__main__":
+    unittest.main()
