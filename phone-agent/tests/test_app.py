@@ -41,6 +41,15 @@ class CallsTest(unittest.TestCase):
     def test_forged_request_denied(self):
         self.assertEqual(self.client.post("/voice/session-test").status_code, 403)
 
+    def test_ai_check_requires_control_key(self):
+        self.assertEqual(self.client.post("/check-ai").status_code, 403)
+        env = {"CONTROL_API_KEY": "test-control", "LLM_BASE_URL": "https://example.com/v1", "LLM_MODEL": "test"}
+        with patch.dict(os.environ, env), patch("app.answer", return_value="Conexão validada.") as model:
+            response = self.client.post("/check-ai", headers={"Authorization": "Bearer test-control"})
+            self.assertEqual(response.status_code, 200)
+            self.assertTrue(response.json["ok"])
+            model.assert_called_once()
+
     def test_signed_get_from_console(self):
         fields = {"AccountSid": self.account, "CallSid": self.sid, "To": self.phone}
         path = f"/voice/{self.token}?" + urlencode(fields)

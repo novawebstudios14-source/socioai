@@ -47,10 +47,13 @@ def answer(messages):
         "role": "system",
         "content": "Você é um assistente de IA em uma ligação de teste autorizada. Fale português brasileiro. Responda em até duas frases curtas. Não afirme ser humano nem ter acesso ao ChatGPT ou executar ações externas. Não peça dados sensíveis. Não faça ligações nem prometa retornos."
     }
-    headers = {"Content-Type": "application/json"}
+    headers = {"Content-Type": "application/json", "User-Agent": "NovaPhoneAgent/1.0"}
     if os.getenv("LLM_API_KEY"):
         headers["Authorization"] = "Bearer " + os.environ["LLM_API_KEY"]
     body = {"model": model, "messages": [system] + messages[-12:], "max_tokens": 100}
+    if model.startswith("openai/gpt-oss-"):
+        body.pop("max_tokens")
+        body.update(max_completion_tokens=512, reasoning_effort="low")
     req = urllib.request.Request(base + "/chat/completions", data=json.dumps(body).encode(), headers=headers)
     # O teste da Twilio exige resposta do webhook em até 5 segundos.
     with urllib.request.urlopen(req, timeout=3) as result:
@@ -62,6 +65,7 @@ def answer(messages):
 
 def create_app(config=None):
     app = Flask(__name__)
+    app.logger.setLevel("INFO")
     app.config.update(
         MAX_CONTENT_LENGTH=16384,
         DATABASE=os.getenv("DATABASE_PATH", "calls.sqlite3"),
@@ -77,6 +81,20 @@ def create_app(config=None):
     @app.get("/health")
     def health():
         return {"status": "ok", "ai_configured": bool(os.getenv("LLM_BASE_URL") and os.getenv("LLM_MODEL"))}
+
+    @app.post("/check-ai")
+    def check_ai():
+        key = os.getenv("CONTROL_API_KEY", "")
+        if not key or not secrets.compare_digest(request.headers.get("Authorization", ""), "Bearer " + key):
+            abort(403)
+        if not os.getenv("LLM_BASE_URL") or not os.getenv("LLM_MODEL"):
+            return {"ok": False, "error": "Modelo não configurado"}, 503
+        start = time.monotonic()
+        try:
+            text = answer([{"role": "user", "content": "Confirme brevemente em português que consegue conversar por telefone."}])
+            return {"ok": True, "response": text, "seconds": round(time.monotonic() - start, 2)}
+        except Exception as error:
+            return {"ok": False, "kind": type(error).__name__}, 503
 
     @app.post("/calls")
     def call_api():
@@ -179,6 +197,7 @@ def create_app(config=None):
                 abort(409)
             messages = json.loads(session["messages"])
             speech = fields.get("SpeechResult", "").strip()[:1500]
+            ai_success = False
             stop = bool(re.search(r"\b(tchau|encerrar|desligar|pare|parar)\b", speech, re.I))
             if turn == 0:
                 text = "Olá. Sou um assistente de inteligência artificial em uma ligação de teste. Você consegue me ouvir bem? Para encerrar, diga desligar."
@@ -188,6 +207,7 @@ def create_app(config=None):
                 messages.append({"role": "user", "content": speech})
                 try:
                     text = answer(messages)
+                    ai_success = bool(os.getenv("LLM_BASE_URL") and os.getenv("LLM_MODEL"))
                 except Exception:
                     app.logger.warning("O provedor de IA não respondeu dentro do teste; sem registrar credenciais ou fala.")
                     text = "Recebi sua fala, mas a inteligência artificial está indisponível agora."
@@ -208,6 +228,7 @@ def create_app(config=None):
             content = str(xml)
             db.execute("UPDATE sessions SET sid=?, messages=?, next_turn=? WHERE token=?", (sid, json.dumps(messages, ensure_ascii=False), turn + 1, token))
             db.execute("INSERT INTO replies VALUES (?,?,?)", (token, turn, content))
+            app.logger.info("voice_turn processed turn=%s speech_present=%s ai_success=%s", turn, bool(speech), ai_success)
         return Response(content, mimetype="text/xml")
 
     return app
