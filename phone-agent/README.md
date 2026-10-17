@@ -1,45 +1,46 @@
-# Agente de voz por telefone — protótipo Twilio
+# Agente de voz Twilio — protótipo em português
 
-Recebe o webhook Custom TwiML URL do painel Try out Voice e conversa em português usando Gather/Say. Um modelo compatível com a API OpenAI gera as respostas; sem modelo configurado, o serviço informa que está apenas em teste de telefonia.
+Hospedagem: Render Free. O modelo de IA precisa ser conectado por LLM_BASE_URL, LLM_MODEL e LLM_API_KEY. Sem esses valores, o agente informa que está em teste de telefonia. Ele não tem acesso às ferramentas nem ao histórico do ChatGPT.
 
 ## Estado verificado
 
-- Nove testes locais passaram, incluindo o fluxo /voice usado pelo painel, assinaturas GET/POST, destinatário autorizado, retries e encerramento.
-- As tentativas anteriores de criação de chamada com Twiml e parâmetros extras foram recusadas pela conta Trial. Isso não prova que uma chamada com Url seja bloqueada.
-- A ligação real com o webhook e o modelo ainda precisa ser validada. Código publicado não significa agente ativo.
+- 12 testes locais passaram.
+- A API Trial aceitou To + Url e criou uma chamada real. Os parâmetros Twiml, From e controles extras haviam sido recusados.
+- O primeiro webhook real foi rejeitado pela validação padrão. A versão atual permite um token individual com validade de três minutos, vinculado a uma chamada criada pelo endpoint de controle. Esse fluxo precisa ser verificado na chamada após a implantação.
 
-## Implantação de teste no Render
-
-Use o plano free, runtime python, a branch feature/phone-agent-trial deste repositório e estes comandos:
+## Hospedagem
 
 Build: pip install -r phone-agent/requirements.txt
 
 Start: gunicorn --chdir phone-agent --workers 1 --threads 1 --bind 0.0.0.0:$PORT 'app:create_app()'
 
-Configure as variáveis TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN e ALLOWED_PHONES (números completos separados por vírgula). Para chamadas iniciadas pelo painel, TWILIO_FROM_NUMBER não é necessário. A URL externa é detectada automaticamente via RENDER_EXTERNAL_URL.
+Plano free, uma instância. RENDER_EXTERNAL_URL é detectado automaticamente. Defina GUNICORN_CMD_ARGS=--access-logfile /dev/null para não registrar URLs que contêm tokens individuais.
 
-Para IA, configure LLM_BASE_URL (URL base terminada em /v1), LLM_MODEL e LLM_API_KEY. No Groq, use https://api.groq.com/openai/v1 e um modelo disponível na conta. Não coloque credenciais em arquivos versionados. A disponibilidade gratuita depende da conta e dos limites do provedor.
+Variáveis: TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN, ALLOWED_PHONES e CONTROL_API_KEY (segredo aleatório de pelo menos 32 bytes). LLM_BASE_URL, LLM_MODEL e LLM_API_KEY conectam o provedor de IA.
 
-Depois da implantação, acesse /health e verifique a resposta. No painel Twilio, selecione Custom e use a URL pública do serviço seguida de /voice. Inicie a chamada para um destinatário verificado e autorizado. O número de origem do fluxo Trial pode ser compartilhado pela Twilio e não significa que a conta possui um número próprio.
+## Iniciar chamadas
 
-O plano gratuito do Render pode suspender o serviço quando ocioso. Abra /health e aguarde o serviço responder antes do teste. O prazo do webhook da conta Trial é de cinco segundos; o primeiro acesso após suspensão pode falhar. Esse plano é adequado para validar um protótipo, não para prometer atendimento permanente.
+POST /calls com Authorization: Bearer CONTROL_API_KEY, Content-Type: application/json e Idempotency-Key único de 16 a 80 letras, números, sublinhado ou hífen. Corpo: {"to":"número E.164 autorizado"}.
 
-## Limites e privacidade
+O servidor cria uma sessão, chama a Twilio apenas com To e Url e vincula o CallSid retornado à sessão. O endereço individual não é devolvido ao cliente. Repetir a chave de idempotência não inicia outra ligação. Existe limite de uma sessão a cada três minutos por destinatário.
 
-- Até sete respostas por chamada e encerramento ao dizer desligar, parar ou tchau.
-- Gravação de áudio desativada no comando de criação local; este aplicativo não solicita gravação pelo painel.
-- Texto da conversa armazenado em SQLite para manter contexto. No Render free, o disco é efêmero: reinício ou nova implantação pode apagar sessões e interromper chamadas.
-- O comando local de criação tem limite de 120 segundos. As chamadas pelo painel obedecem aos limites da Twilio; o aplicativo encerra no limite de interações.
-- Não há endpoint HTTP para iniciar chamadas. /voice apenas responde a webhooks Twilio assinados.
-- O agente não acessa o histórico nem as ferramentas do ChatGPT e não executa ações externas.
+O webhook /voice sem token exige assinatura Twilio válida. Os endereços individuais também aceitam o token de sessão de 256 bits, somente para chamada previamente criada pelo endpoint autenticado e dentro da validade de três minutos. Se o callback informar CallSid, To ou AccountSid, esses valores devem corresponder à sessão. Tokens desconhecidos, expirados e sessões sem CallSid são rejeitados.
 
-## Desenvolvimento
+## Controles e limites
 
-Instale requirements.txt em um ambiente Python 3.11+ e execute python -m unittest discover -s tests -v na pasta phone-agent. Os testes não fazem ligações nem acessam um modelo externo.
+- Destinos autorizados em ALLOWED_PHONES; nenhum endpoint de discagem anônimo.
+- Até sete respostas e encerramento por voz.
+- O aplicativo não solicita gravação de áudio.
+- Texto da conversa fica no SQLite para contexto. O disco do Render Free é efêmero; reinícios podem apagar sessões e interromper chamadas.
+- O Render Free pode suspender por ociosidade. Abra /health antes do teste e aguarde status ok. Não se promete disponibilidade contínua.
+- O Trial Twilio e os provedores de IA têm cotas próprias. Não existe promessa de chamadas gratuitas ilimitadas.
+
+## Testes
+
+Na pasta phone-agent: python -m unittest discover -s tests -v. Os testes não fazem ligações nem acessam IA externa.
 
 ## Referências
 
-- https://www.twilio.com/docs/usage/trials/try-out-voice
-- https://www.twilio.com/docs/usage/security
-- https://render.com/docs/free
-- https://console.groq.com/docs/rate-limits
+https://www.twilio.com/docs/usage/trials/try-out-voice
+https://render.com/docs/free
+https://console.groq.com/docs/rate-limits

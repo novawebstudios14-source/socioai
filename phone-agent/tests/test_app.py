@@ -1,6 +1,7 @@
 import json
 import os
 import tempfile
+import time
 import unittest
 from unittest.mock import patch
 from xml.etree import ElementTree as ET
@@ -102,6 +103,41 @@ class CallsTest(unittest.TestCase):
             with self.assertRaises(ValueError):
                 start_call(self.app, "+5511999999999")
             client.assert_not_called()
+
+    def test_trial_creation_uses_only_to_and_url(self):
+        env = {"ALLOWED_PHONES": self.phone, "TWILIO_ACCOUNT_SID": self.account, "TWILIO_AUTH_TOKEN": "test-secret", "TWILIO_TRIAL": "true"}
+        with patch.dict(os.environ, env), patch("app.Client") as client:
+            client.return_value.calls.create.return_value.sid = self.sid
+            client.return_value.calls.create.return_value.status = "queued"
+            start_call(self.app, self.phone)
+            kwargs = client.return_value.calls.create.call_args.kwargs
+            self.assertEqual(set(kwargs), {"to", "url"})
+            self.assertEqual(kwargs["to"], self.phone)
+
+    def test_control_route_requires_auth_and_idempotency(self):
+        self.assertEqual(self.client.post("/calls", json={"to": self.phone}).status_code, 403)
+        env = {"CONTROL_API_KEY": "test-control", "ALLOWED_PHONES": self.phone}
+        headers = {"Authorization": "Bearer test-control", "Idempotency-Key": "test-call-0123456789"}
+        with patch.dict(os.environ, env), patch("app.Client") as client:
+            client.return_value.calls.create.return_value.sid = self.sid
+            client.return_value.calls.create.return_value.status = "queued"
+            response = self.client.post("/calls", json={"to": self.phone}, headers=headers)
+            duplicate = self.client.post("/calls", json={"to": self.phone}, headers=headers)
+            self.assertEqual(response.status_code, 201)
+            self.assertTrue(duplicate.json["duplicate"])
+            self.assertEqual(client.return_value.calls.create.call_count, 1)
+
+    def test_bearer_requires_live_session_and_matches_call(self):
+        path = "/voice/" + self.token
+        self.assertEqual(self.client.post(path).status_code, 403)
+        with connect(self.app) as db:
+            db.execute("UPDATE sessions SET sid=?,expires_at=? WHERE token=?", (self.sid, int(time.time()) + 60, self.token))
+        wrong = self.client.post(path, data={"CallSid": "CA" + "9" * 32})
+        self.assertEqual(wrong.status_code, 403)
+        self.assertEqual(self.client.post(path, data={"CallSid": self.sid}).status_code, 200)
+        with connect(self.app) as db:
+            db.execute("UPDATE sessions SET expires_at=1 WHERE token=?", (self.token,))
+        self.assertEqual(self.client.post(path).status_code, 403)
 
 
 if __name__ == "__main__":

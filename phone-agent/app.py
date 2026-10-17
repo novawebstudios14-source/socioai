@@ -4,6 +4,7 @@ import json
 import os
 import re
 import secrets
+import time
 import sqlite3
 import urllib.request
 from pathlib import Path
@@ -31,6 +32,9 @@ def connect(app):
     db.row_factory = sqlite3.Row
     db.execute("CREATE TABLE IF NOT EXISTS sessions (token TEXT PRIMARY KEY, phone TEXT, sid TEXT, messages TEXT, next_turn INTEGER DEFAULT 0)")
     db.execute("CREATE TABLE IF NOT EXISTS replies (token TEXT, turn INTEGER, xml TEXT, PRIMARY KEY(token,turn))")
+    columns = {row[1] for row in db.execute("PRAGMA table_info(sessions)")}
+    if "expires_at" not in columns:
+        db.execute("ALTER TABLE sessions ADD COLUMN expires_at INTEGER DEFAULT 0")
     return db
 
 
@@ -74,6 +78,41 @@ def create_app(config=None):
     def health():
         return {"status": "ok", "ai_configured": bool(os.getenv("LLM_BASE_URL") and os.getenv("LLM_MODEL"))}
 
+    @app.post("/calls")
+    def call_api():
+        key = os.getenv("CONTROL_API_KEY", "")
+        if not key or not secrets.compare_digest(request.headers.get("Authorization", ""), "Bearer " + key):
+            abort(403)
+        body = request.get_json(silent=True) or {}
+        phone = body.get("to", "")
+        allowed = {p.strip() for p in os.getenv("ALLOWED_PHONES", "").split(",") if p.strip()}
+        if phone not in allowed or not re.fullmatch(r"\+55\d{10,11}", phone):
+            abort(403)
+        idem = request.headers.get("Idempotency-Key", "")
+        if not re.fullmatch(r"[A-Za-z0-9_-]{16,80}", idem):
+            abort(400)
+        import hmac
+        import hashlib
+        token = hmac.new(key.encode(), idem.encode(), hashlib.sha256).hexdigest()
+        with connect(app) as db:
+            db.execute("BEGIN IMMEDIATE")
+            existing = db.execute("SELECT sid FROM sessions WHERE token=?", (token,)).fetchone()
+            if existing:
+                return {"call_sid": existing["sid"], "duplicate": True}, 200 if existing["sid"] else 409
+            active = db.execute("SELECT 1 FROM sessions WHERE phone=? AND expires_at>?", (phone, int(time.time()))).fetchone()
+            if active:
+                abort(429)
+            db.execute("INSERT INTO sessions(token,phone,messages,expires_at) VALUES(?,?,?,?)", (token, phone, "[]", int(time.time()) + 180))
+        try:
+            client = Client(app.config["TWILIO_ACCOUNT_SID"], app.config["TWILIO_AUTH_TOKEN"])
+            call = client.calls.create(to=phone, url=app.config["PUBLIC_URL"] + "/voice/" + token)
+            with connect(app) as db:
+                db.execute("UPDATE sessions SET sid=? WHERE token=?", (call.sid, token))
+            return {"call_sid": call.sid, "status": call.status}, 201
+        except Exception:
+            # Não refazer automaticamente: pode haver uma chamada criada após timeout.
+            return {"error": "Não foi possível confirmar a criação. Consulte a Twilio antes de repetir."}, 502
+
     @app.route("/voice", defaults={"token": None}, methods=["GET", "POST"])
     @app.route("/voice/<token>", methods=["GET", "POST"])
     def voice(token):
@@ -83,10 +122,27 @@ def create_app(config=None):
         url = app.config["PUBLIC_URL"] + request.path
         if request.query_string:
             url += "?" + request.query_string.decode("ascii")
-        if not RequestValidator(auth).validate(url, request.form, request.headers.get("X-Twilio-Signature", "")):
+        fields = (request.get_json(silent=True) or {}) if request.is_json else (request.form if request.method == "POST" else request.args)
+        signed = RequestValidator(auth).validate(url, request.form, request.headers.get("X-Twilio-Signature", ""))
+        bearer_session = None
+        if not signed and token:
+            with connect(app) as db:
+                bearer_session = db.execute("SELECT * FROM sessions WHERE token=? AND expires_at>?", (token, int(time.time()))).fetchone()
+            if not bearer_session or not bearer_session["sid"]:
+                abort(403)
+            # Token individual de 256 bits, gerado apenas pela rota de controle autenticada.
+            # Só serve para esta chamada e expira; não habilita a rota pública /voice.
+            if fields.get("CallSid") and fields["CallSid"] != bearer_session["sid"]:
+                abort(403)
+            if fields.get("To") and fields["To"] != bearer_session["phone"]:
+                abort(403)
+            if fields.get("AccountSid") and fields["AccountSid"] != app.config["TWILIO_ACCOUNT_SID"]:
+                abort(403)
+        elif not signed:
+            app.logger.warning("webhook_denied signature_present=%s content_type=%s", bool(request.headers.get("X-Twilio-Signature")), request.mimetype)
             abort(403)
-        fields = request.form if request.method == "POST" else request.args
-        if fields.get("AccountSid") != app.config["TWILIO_ACCOUNT_SID"]:
+        if not bearer_session and fields.get("AccountSid") != app.config["TWILIO_ACCOUNT_SID"]:
+            app.logger.warning("webhook_denied account_mismatch present=%s", bool(fields.get("AccountSid")))
             abort(403)
         try:
             turn = int(request.args.get("turn", "0"))
@@ -94,7 +150,7 @@ def create_app(config=None):
             abort(400)
         if not 0 <= turn <= 7:
             abort(400)
-        sid = fields.get("CallSid", "")
+        sid = bearer_session["sid"] if bearer_session else fields.get("CallSid", "")
         if not re.fullmatch(r"CA[0-9a-fA-F]{32}", sid):
             abort(400)
         console_start = token is None
@@ -109,7 +165,7 @@ def create_app(config=None):
             if console_start:
                 db.execute("INSERT OR IGNORE INTO sessions (token,phone,sid,messages) VALUES (?,?,?,?)", (token, fields.get("To"), sid, "[]"))
             session = db.execute("SELECT * FROM sessions WHERE token=?", (token,)).fetchone()
-            if not session or fields.get("To") != session["phone"]:
+            if not session or (not bearer_session and fields.get("To") != session["phone"]):
                 abort(403)
             if session["sid"] and session["sid"] != sid:
                 abort(403)
@@ -158,9 +214,12 @@ def start_call(app, phone):
     allowed = {p.strip() for p in os.getenv("ALLOWED_PHONES", "").split(",") if p.strip()}
     if phone not in allowed or not re.fullmatch(r"\+55\d{10,11}", phone):
         raise ValueError("Número brasileiro não autorizado em ALLOWED_PHONES.")
-    required = ["TWILIO_ACCOUNT_SID", "TWILIO_AUTH_TOKEN", "TWILIO_FROM_NUMBER", "PUBLIC_URL"]
+    trial = os.getenv("TWILIO_TRIAL", "true").lower() == "true"
+    required = ["TWILIO_ACCOUNT_SID", "TWILIO_AUTH_TOKEN"]
+    if not trial:
+        required.append("TWILIO_FROM_NUMBER")
     if any(not os.getenv(name) for name in required):
-        raise ValueError("Preencha TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN, TWILIO_FROM_NUMBER e PUBLIC_URL no .env.")
+        raise ValueError("Preencha as credenciais Twilio; contas pagas também precisam do número de origem.")
     if not app.config["PUBLIC_URL"].startswith("https://"):
         raise ValueError("PUBLIC_URL precisa usar HTTPS.")
     token = secrets.token_urlsafe(32)
@@ -168,7 +227,11 @@ def start_call(app, phone):
         db.execute("INSERT INTO sessions (token,phone,messages) VALUES (?,?,?)", (token, phone, "[]"))
     # Sem retries automáticos: evita ligações duplicadas após falhas de rede.
     client = Client(os.environ["TWILIO_ACCOUNT_SID"], os.environ["TWILIO_AUTH_TOKEN"])
-    call = client.calls.create(to=phone, from_=os.environ["TWILIO_FROM_NUMBER"], url=app.config["PUBLIC_URL"] + "/voice/" + token, method="POST", time_limit=120, timeout=20, record=False)
+    options = {"to": phone, "url": app.config["PUBLIC_URL"] + "/voice/" + token}
+    if not trial:
+        options.update(from_=os.environ["TWILIO_FROM_NUMBER"], method="POST", time_limit=120, timeout=20, record=False)
+    # Trial aceita To + Url. From, Twiml e parâmetros extras podem ser recusados.
+    call = client.calls.create(**options)
     print(json.dumps({"call_sid": call.sid, "status": call.status}, ensure_ascii=False))
 
 
