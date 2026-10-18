@@ -50,6 +50,15 @@ class CallsTest(unittest.TestCase):
             self.assertTrue(response.json["ok"])
             model.assert_called_once()
 
+    def test_ai_check_validates_actual_conversation_protocol(self):
+        self.app.config["BRIDGE_ENABLED"] = True
+        env = {"CONTROL_API_KEY": "test-control", "LLM_BASE_URL": "https://openrouter.ai/api/v1", "LLM_MODEL": "test:free", "LLM_API_KEY": "test-key"}
+        with patch.dict(os.environ, env), patch("app.converse", return_value="Pode falar normalmente.") as model:
+            response = self.client.post("/check-ai", headers={"Authorization": "Bearer test-control"})
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json["model"], "test:free")
+        model.assert_called_once()
+
     def test_signed_get_from_console(self):
         fields = {"AccountSid": self.account, "CallSid": self.sid, "To": self.phone}
         path = f"/voice/{self.token}?" + urlencode(fields)

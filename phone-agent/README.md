@@ -33,7 +33,7 @@ Python 3.12. Instale `pip install -r requirements.txt` e execute `gunicorn --wor
 
 Variáveis de telefonia: `TWILIO_ACCOUNT_SID`, `TWILIO_AUTH_TOKEN`, `ALLOWED_PHONES` (lista E.164 separada por vírgula), `CONTROL_API_KEY`, `PUBLIC_URL` (ou `RENDER_EXTERNAL_URL`). Na Trial, o transporte envia apenas To e Url; não atribui número próprio nem elimina os limites da Twilio.
 
-Variáveis de IA: `LLM_BASE_URL=https://openrouter.ai/api/v1`, `LLM_API_KEY` (chave própria do OpenRouter), `LLM_MODEL=google/gemma-4-31b-it:free`. O modelo foi encontrado no catálogo público em 18/10/2026; confirme disponibilidade antes de ativar. A integração recusa modelos pagos no domínio OpenRouter e desativa fallback de provedor e raciocínio estendido. Limites e disponibilidade dos modelos gratuitos variam.
+Variáveis de IA: `LLM_BASE_URL=https://openrouter.ai/api/v1`, `LLM_API_KEY` (chave própria do OpenRouter), `LLM_MODEL=xingchen-agi/xing4.0-29b-a4b:free`. O modelo foi encontrado no catálogo público em 18/10/2026; confirme disponibilidade antes de ativar. A integração recusa modelos pagos no domínio OpenRouter e desativa fallback de provedor e raciocínio estendido. Limites e disponibilidade dos modelos gratuitos variam.
 
 O repositório [public-apis/public-apis](https://github.com/public-apis/public-apis) é um catálogo, não fornece uma chave compartilhada nem hospeda os modelos. Crie uma chave em [OpenRouter](https://openrouter.ai/settings/keys), configure as três variáveis em conjunto e valide `POST /check-ai` com a credencial de controle antes de testar a ligação. Uma chave Groq não autentica no OpenRouter. Não há mudança automática do provedor em produção apenas ao publicar este código.
 

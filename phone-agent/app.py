@@ -75,8 +75,11 @@ def create_app(config=None):
             return {"ok": False, "error": "Modelo não configurado"}, 503
         start = time.monotonic()
         try:
-            text = answer([{"role": "user", "content": "Confirme brevemente em português que consegue conversar por telefone."}])
-            return {"ok": True, "response": text, "seconds": round(time.monotonic() - start, 2)}
+            if os.getenv("BRIDGE_ENABLED") == "true" or app.config.get("BRIDGE_ENABLED"):
+                text = converse([], "preflight", 1, "Podemos conversar normalmente, sem usar a palavra comando?")
+            else:
+                text = answer([{"role": "user", "content": "Confirme brevemente em português que consegue conversar por telefone."}])
+            return {"ok": True, "response": text, "model": os.getenv("LLM_MODEL"), "seconds": round(time.monotonic() - start, 2)}
         except Exception as error:
             return {"ok": False, "kind": type(error).__name__}, 503
 
