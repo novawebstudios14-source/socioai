@@ -13,7 +13,7 @@ from flask import Flask, Response, abort, request
 from twilio.request_validator import RequestValidator
 from twilio.rest import Client
 from twilio.twiml.voice_response import Gather, VoiceResponse
-from bridge import Bridge, voice_command
+from bridge import Bridge, voice_command, is_hangup_request
 
 
 def load_env(path=".env"):
@@ -84,7 +84,7 @@ def create_app(config=None):
 
     @app.get("/health")
     def health():
-        return {"status": "ok", "ai_configured": bool(os.getenv("LLM_BASE_URL") and os.getenv("LLM_MODEL")), "bridge_configured": bridge.store.ready}
+        return {"status": "ok", "ai_configured": bool(os.getenv("LLM_BASE_URL") and os.getenv("LLM_MODEL")), "bridge_configured": bridge.store.ready, "voice_mode": "natural_requests" if os.getenv("BRIDGE_ENABLED") == "true" or app.config.get("BRIDGE_ENABLED") else "conversation"}
 
     @app.post("/check-ai")
     def check_ai():
@@ -141,6 +141,7 @@ def create_app(config=None):
     @app.route("/voice", defaults={"token": None}, methods=["GET", "POST"])
     @app.route("/voice/<token>", methods=["GET", "POST"])
     def voice(token):
+        started = time.monotonic()
         auth = app.config["TWILIO_AUTH_TOKEN"]
         if not auth or not app.config["PUBLIC_URL"]:
             abort(503)
@@ -173,7 +174,9 @@ def create_app(config=None):
             turn = int(request.args.get("turn", "0"))
         except ValueError:
             abort(400)
-        if not 0 <= turn <= 7:
+        command_mode = bool(os.getenv("BRIDGE_ENABLED") == "true" or app.config.get("BRIDGE_ENABLED"))
+        max_turn = 31 if command_mode else 7
+        if not 0 <= turn <= max_turn:
             abort(400)
         sid = bearer_session["sid"] if bearer_session else fields.get("CallSid", "")
         if not re.fullmatch(r"CA[0-9a-fA-F]{32}", sid):
@@ -202,17 +205,16 @@ def create_app(config=None):
             messages = json.loads(session["messages"])
             speech = fields.get("SpeechResult", "").strip()[:1500]
             ai_success = False
-            command_mode = bool(os.getenv("BRIDGE_ENABLED") == "true" or app.config.get("BRIDGE_ENABLED"))
             command_text = voice_command(bridge, messages, sid, turn, speech) if command_mode and turn > 0 and speech else None
-            stop = command_text is None and bool(re.search(r"\b(tchau|encerrar|desligar|pare|parar)\b", speech, re.I))
+            stop = command_text is None and (is_hangup_request(speech) if command_mode else bool(re.search(r"\b(tchau|encerrar|desligar|pare|parar)\b", speech, re.I)))
             if turn == 0:
                 text = "Olá. Sou um assistente de inteligência artificial em uma ligação de teste. Você consegue me ouvir bem? Para encerrar, diga desligar."
                 if command_mode:
-                    text = "Olá. Sou seu assistente de inteligência artificial. Para enviar um pedido ao Work, diga comando para o chat, seguido do pedido. Vou ler para você confirmar. Para encerrar, diga desligar."
+                    text = "Oi. Sou seu assistente de inteligência artificial. Pode falar."
             elif command_text is not None:
                 text = command_text
             elif stop:
-                text = "Teste encerrado. Até mais."
+                text = "Até mais."
             elif speech:
                 messages.append({"role": "user", "content": speech})
                 try:
@@ -225,20 +227,20 @@ def create_app(config=None):
             else:
                 text = "Não ouvi sua resposta. Pode repetir?"
             xml = VoiceResponse()
-            if stop or turn == 7:
+            if stop or turn == max_turn:
                 xml.say(text, language="pt-BR")
                 if not stop:
                     xml.say("O limite deste teste foi atingido. Até mais.", language="pt-BR")
                 xml.hangup()
             else:
-                gather = Gather(input="speech", language="pt-BR", timeout=5, speech_timeout="auto", action=f"{app.config['PUBLIC_URL']}/voice/{token}?turn={turn + 1}", method="POST", action_on_empty_result=True)
+                gather = Gather(input="speech", language="pt-BR", timeout=3 if command_mode else 5, speech_timeout="auto", action=f"{app.config['PUBLIC_URL']}/voice/{token}?turn={turn + 1}", method="POST", action_on_empty_result=True)
                 gather.say(text, language="pt-BR")
                 xml.append(gather)
                 xml.hangup()
             content = str(xml)
             db.execute("UPDATE sessions SET sid=?, messages=?, next_turn=? WHERE token=?", (sid, json.dumps(messages, ensure_ascii=False), turn + 1, token))
             db.execute("INSERT INTO replies VALUES (?,?,?)", (token, turn, content))
-            app.logger.info("voice_turn processed turn=%s speech_present=%s ai_success=%s", turn, bool(speech), ai_success)
+            app.logger.info("voice_turn processed turn=%s speech_present=%s ai_success=%s elapsed_ms=%s", turn, bool(speech), ai_success, round((time.monotonic() - started) * 1000))
         return Response(content, mimetype="text/xml")
 
     return app

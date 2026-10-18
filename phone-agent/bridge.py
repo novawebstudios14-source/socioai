@@ -553,46 +553,64 @@ def valid_redirect(url):
 
 
 def normalized(text):
-    return "".join(c for c in unicodedata.normalize("NFD", text.lower()) if unicodedata.category(c) != "Mn").strip(" .!?,")
+    folded = "".join(c for c in unicodedata.normalize("NFD", text.lower()) if unicodedata.category(c) != "Mn")
+    return re.sub(r"[\W_]+", " ", folded).strip()
+
+
+STOP_PHRASES = {"desligar", "pode desligar", "tchau", "encerrar", "parar", "pare", "pode encerrar", "pode desligar a ligacao", "ate mais"}
+
+
+def is_hangup_request(text):
+    return normalized(text) in STOP_PHRASES
 
 
 def voice_command(bridge, messages, sid, turn, speech):
-    """Return a phone response or None for ordinary conversation. Confirmation is exact."""
-    pending = next((m for m in reversed(messages) if m.get("role") == "voice_pending"), None)
+    """Natural request intake; routine replies do not wait for a second model."""
     clean = normalized(speech)
-    if clean in ("desligar", "pode desligar", "tchau", "encerrar", "parar"):
+    pending = next((m for m in reversed(messages) if m.get("role") == "voice_pending"), None)
+    confirmations = {"sim", "sim pode", "sim pode enviar", "sim pode mandar", "pode", "pode enviar", "pode mandar", "pode salvar", "pode fazer", "pode executar", "manda", "envia", "isso", "isso mesmo", "certo", "confirmado", "confirmo", "confirmar", "confirmar comando", "confirmo o comando", "ok", "okay", "beleza", "positivo", "sim por favor", "pode sim", "pode enviar por favor"}
+    cancellations = {"nao", "nao envia", "nao envie", "nao pode", "cancela", "cancelar", "cancelar comando", "cancelar pedido", "deixa pra la", "esquece"}
+    if is_hangup_request(speech):
         return None
     if pending:
-        messages.remove(pending)
-        if clean in ("confirmar comando", "confirmo o comando", "confirmar", "confirmo"):
+        if clean in confirmations:
             try:
                 cmd = bridge.accept(pending["id"], sid, pending["content"])
             except Exception:
-                messages.append(pending)
-                return "Não consegui salvar seu comando. Nada foi enviado ao chat. Diga confirmar comando para tentar de novo, ou cancelar comando."
+                return "Não consegui salvar. Posso tentar de novo?"
+            messages.remove(pending)
             if cmd["chat_linked_at_confirmation"]:
-                return "Comando salvo para entrega ao chat. A execução e o resultado aparecerão lá."
-            return "Comando salvo. Para executar, escreva nesta conversa: execute meu último comando. A execução ainda não começou."
-        if clean in ("cancelar", "cancelar comando", "nao", "corrigir comando"):
-            return "Comando cancelado. Para outro, diga comando para o chat, seguido do pedido."
-        messages.append(pending)
-        return "Diga confirmar comando para enviar, ou cancelar comando."
+                return "Salvei e deixei na fila do chat."
+            return "Salvei. No chat, diga: execute meu último pedido."
+        if clean in cancellations:
+            messages.remove(pending)
+            return "Cancelei. Pode falar outro pedido."
+        if re.match(r"^(sim|talvez|acho|pode ser|nao sei)\b", clean):
+            return "Você quer enviar esse pedido para o chat?"
+        if clean in {"repete", "repita", "o que voce entendeu", "qual foi o pedido"}:
+            return pending["content"] + ". Posso enviar?"
+        # A correction replaces an unsent request; an addition extends it.
+        messages.remove(pending)
+        if re.match(r"^(tambem|e tambem|inclua|inclui|adicione|adiciona)\b", clean):
+            speech = pending["content"] + ". " + speech
+        else:
+            speech = re.sub(r"^(?:não[, ]+|na verdade[, ]+|corrigindo[, ]+)", "", speech, flags=re.I)
+    elif clean in {"oi", "ola", "alo", "bom dia", "boa tarde", "boa noite", "oi tudo bem", "tudo bem", "voce me ouve", "ta me ouvindo", "esta me ouvindo"}:
+        return "Estou ouvindo. Pode falar."
+    elif clean in {"obrigado", "obrigada", "valeu", "beleza"}:
+        return "Pode falar se precisar de mais alguma coisa."
+    elif clean in confirmations or clean in cancellations:
+        return "Pode me dizer o que você precisa."
     collecting = next((m for m in reversed(messages) if m.get("role") == "voice_collect"), None)
     if collecting:
         messages.remove(collecting)
-        if clean in ("cancelar", "cancelar comando"):
-            return "Comando cancelado."
-        speech = "comando para o chat " + speech
-    match = re.match(r"^(?:comando para o chat|comando pro chat|executar no chat|enviar para o chat)\s*[:,.-]?\s*(.*)$", speech, re.I)
-    if not match:
-        return None
-    content = match.group(1).strip()
+    # Old explicit prefixes remain accepted, but are never required.
+    content = re.sub(r"^(?:comando para o chat|comando pro chat|executar no chat|enviar para o chat)\s*[:,.-]?\s*", "", speech, flags=re.I).strip()[:1500]
     if not content:
-        messages.append({"role": "voice_collect", "content": ""})
-        return "Qual comando você quer enviar ao chat?"
+        return "O que você precisa?"
     command_id = "cmd_" + digest(sid + ":" + str(turn))[:32]
     messages.append({"role": "voice_pending", "id": command_id, "content": content})
-    return "Seu comando é: " + content + ". Diga confirmar comando para enviar, ou cancelar comando."
+    return "Entendi. Posso enviar esse pedido para o chat?"
 
 
 CONSENT = """<!doctype html><html lang="pt-BR"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Conectar comandos por telefone</title><style>body{font:18px system-ui;max-width:500px;margin:60px auto;padding:24px}input,button{font:inherit;padding:14px;margin:12px 0;width:100%;box-sizing:border-box}button{background:#175bd8;color:white;border:0;border-radius:10px}</style><h1>Conectar seu telefone ao Work</h1><p>Permitir que o ChatGPT leia seus comandos confirmados e registre os resultados.</p><form method="post"><input type="hidden" name="ticket" value="{{ticket}}"><label>Código de conexão<input name="pairing_code" type="password" required autocomplete="off"></label><button>Autorizar conexão</button></form></html>"""

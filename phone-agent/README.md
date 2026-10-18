@@ -4,12 +4,14 @@ Ponte de comandos por telefone para uma conversa Work do ChatGPT. A chamada usa 
 
 ## Uso na ligação
 
-1. Diga: **Comando para o chat: crie um resumo sobre café.**
-2. O assistente lê a transcrição de volta.
-3. Diga **confirmar comando** para registrar e enfileirar o evento, ou **cancelar comando**.
-4. Acompanhe a execução na conversa Work inscrita.
+1. Fale normalmente: **Pesquise notebooks até três mil reais.** Não precisa de palavra de ativação.
+2. O assistente pergunta: **Posso enviar esse pedido para o chat?**
+3. Responda **sim**, **pode enviar** ou **não**. É possível corrigir ou acrescentar detalhes antes de confirmar.
+4. No modo direto, escreva **execute meu último pedido** nesta conversa Work.
 
-O registro não é descrito como execução concluída. Se o chat ainda não estiver inscrito, a chamada informa isso. Comandos anteriores à inscrição ficam disponíveis em `list_voice_commands`, mas não geram eventos retroativos.
+A abertura é curta e o recebimento de pedidos não consulta o modelo de conversa: evita recusas por falta de ferramentas naquele modelo e elimina essa chamada de rede. Isso não é um assistente de áudio em streaming: a telefonia continua usando Gather/Say por turnos. A fala termina na primeira pausa (`speechTimeout=auto`), e a espera sem nenhuma fala é de três segundos. A chamada pode receber mais pedidos sem encerrar após oito turnos; o token por chamada continua expirando em três minutos.
+
+O registro do pedido não é descrito como execução concluída. Comandos anteriores à inscrição ficam disponíveis em `list_voice_commands`, mas não geram eventos retroativos.
 
 ## Modo direto nesta conversa
 

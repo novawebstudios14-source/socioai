@@ -75,6 +75,26 @@ class BridgeTest(unittest.TestCase):
         commands=self.bridge.invoke('list_voice_commands',{})['structuredContent']['commands']
         self.assertEqual([c['id'] for c in commands],['z_older','a_newer'])
 
+    def test_natural_speech_confirmation_correction_and_cancel(self):
+        messages=[]
+        self.assertIn('Estou ouvindo',voice_command(self.bridge,messages,'natural',1,'Oi, tudo bem?'))
+        self.assertEqual(messages,[])
+        reply=voice_command(self.bridge,messages,'natural',2,'Pesquise notebooks até quatro mil reais')
+        self.assertIn('Posso enviar',reply)
+        self.assertEqual(self.bridge.store.mutate(lambda s:s.get('commands',{})),{})
+        voice_command(self.bridge,messages,'natural',3,'Na verdade, pesquise até três mil reais')
+        voice_command(self.bridge,messages,'natural',4,'Inclua modelos usados')
+        saved=voice_command(self.bridge,messages,'natural',5,'Sim, pode enviar')
+        self.assertIn('Salvei',saved)
+        command=self.bridge.store.mutate(lambda s:list(s['commands'].values())[0])
+        self.assertIn('três mil',command['text'])
+        self.assertIn('modelos usados',command['text'])
+        self.assertNotIn('quatro mil',command['text'])
+        voice_command(self.bridge,messages,'natural',6,'Crie outro resumo')
+        voice_command(self.bridge,messages,'natural',7,'Não')
+        self.assertEqual(messages,[])
+        self.assertEqual(len(self.bridge.store.mutate(lambda s:s['commands'])),1)
+
     def test_discovery_and_auth(self):
         self.assertIn('events', self.rpc('server/discover').json['result']['capabilities'])
         self.assertEqual(self.rpc('events/list').json['result']['events'][0]['name'], EVENT)
@@ -160,7 +180,7 @@ class BridgeTest(unittest.TestCase):
         voice_command(self.bridge,m,'call',4,'comando para o chat')
         voice_command(self.bridge,m,'call',5,'Crie um resumo')
         response=voice_command(self.bridge,m,'call',6,'confirmar comando')
-        self.assertIn('execute meu último comando',response)
+        self.assertIn('execute meu último pedido',response)
         cmd=self.bridge.store.mutate(lambda s:list(s['commands'].values())[0])
         self.assertEqual(cmd['text'],'Crie um resumo')
         ident=cmd['id']
@@ -211,15 +231,34 @@ class VoiceBridgeIntegrationTest(unittest.TestCase):
     tearDown = calltests.CallsTest.tearDown
     send = calltests.CallsTest.send
 
+    def test_natural_greeting_listening_and_multiple_turns(self):
+        self.app.config['BRIDGE_ENABLED']=True
+        greeting=self.send()
+        from xml.etree import ElementTree as ET
+        root=ET.fromstring(greeting.data)
+        self.assertEqual(root.find('Gather').get('timeout'),'3')
+        self.assertEqual(root.find('Gather').get('speechTimeout'),'auto')
+        self.assertNotIn('comando para',greeting.text)
+        self.assertLess(len(root.find('Gather/Say').text),85)
+        with patch('app.answer') as model:
+            for turn in range(1,10):
+                response=self.send(turn,'Oi')
+                self.assertEqual(response.status_code,200)
+                self.assertIsNotNone(ET.fromstring(response.data).find('Gather'))
+            model.assert_not_called()
+        end=self.send(10,'Até mais')
+        self.assertIsNone(ET.fromstring(end.data).find('Gather'))
+
     def test_phone_confirm_retry_creates_exactly_one_command(self):
         self.app.config['BRIDGE_ENABLED']=True
         bridge=self.app.extensions['voice_bridge']
         from bridge import Store
         bridge.store=Store(None,Fernet.generate_key(),self.tmp.name+'/bridge.db')
         self.send()
-        reply=self.send(1,'comando para o chat pesquise preços de café')
-        self.assertIn('confirmar comando',reply.text)
-        first=self.send(2,'confirmar comando')
-        retry=self.send(2,'confirmar comando')
+        with patch('app.answer', side_effect=AssertionError('Natural requests must not call the dialogue model')):
+            reply=self.send(1,'Pesquise preços de café')
+        self.assertIn('Posso enviar',reply.text)
+        first=self.send(2,'Pode enviar')
+        retry=self.send(2,'Pode enviar')
         self.assertEqual(first.data,retry.data)
         self.assertEqual(len(bridge.store.mutate(lambda s:s['commands'])),1)
