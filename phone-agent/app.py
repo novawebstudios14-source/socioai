@@ -14,6 +14,7 @@ from twilio.request_validator import RequestValidator
 from twilio.rest import Client
 from twilio.twiml.voice_response import Gather, VoiceResponse
 from bridge import Bridge, voice_command, is_hangup_request
+from conversation import completion, converse
 
 
 def load_env(path=".env"):
@@ -40,28 +41,7 @@ def connect(app):
 
 
 def answer(messages):
-    base = os.getenv("LLM_BASE_URL", "").rstrip("/")
-    model = os.getenv("LLM_MODEL", "")
-    if not base or not model:
-        return "O áudio chegou. Este é o modo de teste de telefonia; a inteligência artificial ainda não foi conectada."
-    system = {
-        "role": "system",
-        "content": "Você é um assistente de IA em uma ligação de teste autorizada. Fale português brasileiro. Responda em até duas frases curtas. Não afirme ser humano nem ter acesso ao ChatGPT ou executar ações externas. Não peça dados sensíveis. Não faça ligações nem prometa retornos."
-    }
-    headers = {"Content-Type": "application/json", "User-Agent": "NovaPhoneAgent/1.0"}
-    if os.getenv("LLM_API_KEY"):
-        headers["Authorization"] = "Bearer " + os.environ["LLM_API_KEY"]
-    body = {"model": model, "messages": [system] + messages[-12:], "max_tokens": 100}
-    if model.startswith("openai/gpt-oss-"):
-        body.pop("max_tokens")
-        body.update(max_completion_tokens=512, reasoning_effort="low")
-    req = urllib.request.Request(base + "/chat/completions", data=json.dumps(body).encode(), headers=headers)
-    # O teste da Twilio exige resposta do webhook em até 5 segundos.
-    with urllib.request.urlopen(req, timeout=3) as result:
-        text = json.load(result)["choices"][0]["message"]["content"]
-    if not isinstance(text, str) or not text.strip():
-        raise ValueError("Resposta de IA vazia")
-    return text.strip()[:700]
+    return completion([{"role": "system", "content": "Converse em português brasileiro natural. Responda diretamente em até duas frases curtas. Não afirme executar ações externas."}] + messages[-12:])[:700]
 
 
 def create_app(config=None):
@@ -84,14 +64,14 @@ def create_app(config=None):
 
     @app.get("/health")
     def health():
-        return {"status": "ok", "ai_configured": bool(os.getenv("LLM_BASE_URL") and os.getenv("LLM_MODEL")), "bridge_configured": bridge.store.ready, "voice_mode": "natural_requests" if os.getenv("BRIDGE_ENABLED") == "true" or app.config.get("BRIDGE_ENABLED") else "conversation"}
+        return {"status": "ok", "ai_configured": bool(os.getenv("LLM_BASE_URL") and os.getenv("LLM_MODEL") and os.getenv("LLM_API_KEY")), "bridge_configured": bridge.store.ready, "voice_mode": "conversational_requests" if os.getenv("BRIDGE_ENABLED") == "true" or app.config.get("BRIDGE_ENABLED") else "conversation"}
 
     @app.post("/check-ai")
     def check_ai():
         key = os.getenv("CONTROL_API_KEY", "")
         if not key or not secrets.compare_digest(request.headers.get("Authorization", ""), "Bearer " + key):
             abort(403)
-        if not os.getenv("LLM_BASE_URL") or not os.getenv("LLM_MODEL"):
+        if not os.getenv("LLM_BASE_URL") or not os.getenv("LLM_MODEL") or not os.getenv("LLM_API_KEY"):
             return {"ok": False, "error": "Modelo não configurado"}, 503
         start = time.monotonic()
         try:
@@ -205,7 +185,14 @@ def create_app(config=None):
             messages = json.loads(session["messages"])
             speech = fields.get("SpeechResult", "").strip()[:1500]
             ai_success = False
-            command_text = voice_command(bridge, messages, sid, turn, speech) if command_mode and turn > 0 and speech else None
+            command_text = None
+            if command_mode and turn > 0 and speech:
+                try:
+                    command_text = voice_command(bridge, messages, sid, turn, speech, conversation=converse)
+                    ai_success = command_text is not None
+                except Exception:
+                    app.logger.warning("conversation_provider_unavailable")
+                    command_text = "A conexão com a inteligência artificial falhou. Pode repetir daqui a pouco?"
             stop = command_text is None and (is_hangup_request(speech) if command_mode else bool(re.search(r"\b(tchau|encerrar|desligar|pare|parar)\b", speech, re.I)))
             if turn == 0:
                 text = "Olá. Sou um assistente de inteligência artificial em uma ligação de teste. Você consegue me ouvir bem? Para encerrar, diga desligar."
@@ -219,13 +206,15 @@ def create_app(config=None):
                 messages.append({"role": "user", "content": speech})
                 try:
                     text = answer([m for m in messages if m.get("role") in ("user", "assistant")])
-                    ai_success = bool(os.getenv("LLM_BASE_URL") and os.getenv("LLM_MODEL"))
+                    ai_success = bool(os.getenv("LLM_BASE_URL") and os.getenv("LLM_MODEL") and os.getenv("LLM_API_KEY"))
                 except Exception:
                     app.logger.warning("O provedor de IA não respondeu dentro do teste; sem registrar credenciais ou fala.")
                     text = "Recebi sua fala, mas a inteligência artificial está indisponível agora."
                 messages.append({"role": "assistant", "content": text})
             else:
                 text = "Não ouvi sua resposta. Pode repetir?"
+            if command_mode and speech:
+                messages.extend([{"role": "user", "content": speech}, {"role": "assistant", "content": text}])
             xml = VoiceResponse()
             if stop or turn == max_turn:
                 xml.say(text, language="pt-BR")

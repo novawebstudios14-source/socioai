@@ -43,7 +43,7 @@ class CallsTest(unittest.TestCase):
 
     def test_ai_check_requires_control_key(self):
         self.assertEqual(self.client.post("/check-ai").status_code, 403)
-        env = {"CONTROL_API_KEY": "test-control", "LLM_BASE_URL": "https://example.com/v1", "LLM_MODEL": "test"}
+        env = {"CONTROL_API_KEY": "test-control", "LLM_BASE_URL": "https://example.com/v1", "LLM_MODEL": "test", "LLM_API_KEY": "test-key"}
         with patch.dict(os.environ, env), patch("app.answer", return_value="Conexão validada.") as model:
             response = self.client.post("/check-ai", headers={"Authorization": "Bearer test-control"})
             self.assertEqual(response.status_code, 200)

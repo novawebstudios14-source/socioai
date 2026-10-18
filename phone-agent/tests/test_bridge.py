@@ -240,12 +240,12 @@ class VoiceBridgeIntegrationTest(unittest.TestCase):
         self.assertEqual(root.find('Gather').get('speechTimeout'),'auto')
         self.assertNotIn('comando para',greeting.text)
         self.assertLess(len(root.find('Gather/Say').text),85)
-        with patch('app.answer') as model:
+        with patch('app.converse', return_value='Oi, Lucas. Tudo bem por aqui.') as model:
             for turn in range(1,10):
                 response=self.send(turn,'Oi')
                 self.assertEqual(response.status_code,200)
                 self.assertIsNotNone(ET.fromstring(response.data).find('Gather'))
-            model.assert_not_called()
+            self.assertEqual(model.call_count,9)
         end=self.send(10,'Até mais')
         self.assertIsNone(ET.fromstring(end.data).find('Gather'))
 
@@ -255,7 +255,7 @@ class VoiceBridgeIntegrationTest(unittest.TestCase):
         from bridge import Store
         bridge.store=Store(None,Fernet.generate_key(),self.tmp.name+'/bridge.db')
         self.send()
-        with patch('app.answer', side_effect=AssertionError('Natural requests must not call the dialogue model')):
+        with patch('conversation.completion', return_value=json.dumps({'reply':'Certo.', 'task':'Pesquise preços de café'})):
             reply=self.send(1,'Pesquise preços de café')
         self.assertIn('Posso enviar',reply.text)
         first=self.send(2,'Pode enviar')

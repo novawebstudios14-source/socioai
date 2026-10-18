@@ -1,6 +1,6 @@
 # Nova Voice Commands
 
-Ponte de comandos por telefone para uma conversa Work do ChatGPT. A chamada usa Twilio Gather/Say em português. O bot de conversa usa Groq; a execução de tarefas acontece no Work, depois da conexão do plugin e da inscrição no evento.
+Ponte de comandos por telefone para uma conversa Work do ChatGPT. A chamada usa Twilio Gather/Say em português. O bot de conversa usa uma API compatível com OpenAI, com configuração recomendada para modelos gratuitos do OpenRouter; a execução de tarefas acontece no Work, depois da conexão do plugin e da inscrição no evento.
 
 ## Uso na ligação
 
@@ -9,7 +9,9 @@ Ponte de comandos por telefone para uma conversa Work do ChatGPT. A chamada usa 
 3. Responda **sim**, **pode enviar** ou **não**. É possível corrigir ou acrescentar detalhes antes de confirmar.
 4. No modo direto, escreva **execute meu último pedido** nesta conversa Work.
 
-A abertura é curta e o recebimento de pedidos não consulta o modelo de conversa: evita recusas por falta de ferramentas naquele modelo e elimina essa chamada de rede. Isso não é um assistente de áudio em streaming: a telefonia continua usando Gather/Say por turnos. A fala termina na primeira pausa (`speechTimeout=auto`), e a espera sem nenhuma fala é de três segundos. A chamada pode receber mais pedidos sem encerrar após oito turnos; o token por chamada continua expirando em três minutos.
+A conversa consulta o modelo a cada fala, preserva os últimos seis pares de falas e diferencia perguntas de propostas de tarefas. Perguntas de esclarecimento preservam o pedido pendente. Toda proposta é lida de volta antes da confirmação; apenas confirmações explícitas salvam na fila, sem depender da decisão do modelo. Respostas inválidas ou falhas do provedor não salvam tarefas.
+
+A telefonia continua usando Gather/Say por turnos, sem streaming de áudio. A fala termina na primeira pausa (`speechTimeout=auto`). A API tem timeout de três segundos, sem repetição automática; modelos gratuitos podem não responder nesse prazo. O Render Free pode precisar despertar antes da criação da chamada. Trocar de modelo não elimina essas duas limitações.
 
 O registro do pedido não é descrito como execução concluída. Comandos anteriores à inscrição ficam disponíveis em `list_voice_commands`, mas não geram eventos retroativos.
 
@@ -31,7 +33,9 @@ Python 3.12. Instale `pip install -r requirements.txt` e execute `gunicorn --wor
 
 Variáveis de telefonia: `TWILIO_ACCOUNT_SID`, `TWILIO_AUTH_TOKEN`, `ALLOWED_PHONES` (lista E.164 separada por vírgula), `CONTROL_API_KEY`, `PUBLIC_URL` (ou `RENDER_EXTERNAL_URL`). Na Trial, o transporte envia apenas To e Url; não atribui número próprio nem elimina os limites da Twilio.
 
-Variáveis de IA: `LLM_BASE_URL=https://api.groq.com/openai/v1`, `LLM_API_KEY`, `LLM_MODEL=openai/gpt-oss-20b`.
+Variáveis de IA: `LLM_BASE_URL=https://openrouter.ai/api/v1`, `LLM_API_KEY` (chave própria do OpenRouter), `LLM_MODEL=google/gemma-4-31b-it:free`. O modelo foi encontrado no catálogo público em 18/10/2026; confirme disponibilidade antes de ativar. A integração recusa modelos pagos no domínio OpenRouter e desativa fallback de provedor e raciocínio estendido. Limites e disponibilidade dos modelos gratuitos variam.
+
+O repositório [public-apis/public-apis](https://github.com/public-apis/public-apis) é um catálogo, não fornece uma chave compartilhada nem hospeda os modelos. Crie uma chave em [OpenRouter](https://openrouter.ai/settings/keys), configure as três variáveis em conjunto e valide `POST /check-ai` com a credencial de controle antes de testar a ligação. Uma chave Groq não autentica no OpenRouter. Não há mudança automática do provedor em produção apenas ao publicar este código.
 
 Variáveis da ponte:
 

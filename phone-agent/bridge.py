@@ -564,7 +564,7 @@ def is_hangup_request(text):
     return normalized(text) in STOP_PHRASES
 
 
-def voice_command(bridge, messages, sid, turn, speech):
+def voice_command(bridge, messages, sid, turn, speech, conversation=None):
     """Natural request intake; routine replies do not wait for a second model."""
     clean = normalized(speech)
     pending = next((m for m in reversed(messages) if m.get("role") == "voice_pending"), None)
@@ -572,6 +572,9 @@ def voice_command(bridge, messages, sid, turn, speech):
     cancellations = {"nao", "nao envia", "nao envie", "nao pode", "cancela", "cancelar", "cancelar comando", "cancelar pedido", "deixa pra la", "esquece"}
     if is_hangup_request(speech):
         return None
+    direct_replies = confirmations | cancellations | {"repete", "repita", "o que voce entendeu", "qual foi o pedido"}
+    if conversation is not None and not (pending and clean in direct_replies):
+        return conversation(messages, sid, turn, speech)
     if pending:
         if clean in confirmations:
             try:
