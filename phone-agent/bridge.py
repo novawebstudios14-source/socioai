@@ -297,7 +297,7 @@ class Bridge:
         def run(state):
             cmds = state.setdefault("commands", {})
             if name == "list_voice_commands":
-                return {"commands": [c for c in cmds.values() if c["status"] in ("pending", "running")][-100:]}
+                return {"commands": sorted((c for c in cmds.values() if c["status"] in ("pending", "running")), key=lambda c: (c["created_at"], c["id"]))[-100:]}
             cmd = cmds.get(args["command_id"])
             if not cmd:
                 raise ValueError("command_not_found")

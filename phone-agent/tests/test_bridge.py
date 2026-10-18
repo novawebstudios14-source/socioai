@@ -65,6 +65,16 @@ class BridgeTest(unittest.TestCase):
             self.assertEqual(self.client.post(path,headers=auth,json={'action':'events/subscribe'}).status_code,400)
             self.assertEqual(self.client.post(path,headers=auth,json={'action':'claim','command_id':'missing','run_id':'direct-chat-run-003'}).status_code,409)
 
+    def test_direct_queue_orders_by_confirmation_time(self):
+        self.bridge.accept('z_older', 'call1', 'Primeiro')
+        self.bridge.accept('a_newer', 'call2', 'Segundo')
+        def dates(state):
+            state['commands']['z_older']['created_at']='2026-10-17T10:00:00Z'
+            state['commands']['a_newer']['created_at']='2026-10-17T11:00:00Z'
+        self.bridge.store.mutate(dates)
+        commands=self.bridge.invoke('list_voice_commands',{})['structuredContent']['commands']
+        self.assertEqual([c['id'] for c in commands],['z_older','a_newer'])
+
     def test_discovery_and_auth(self):
         self.assertIn('events', self.rpc('server/discover').json['result']['capabilities'])
         self.assertEqual(self.rpc('events/list').json['result']['events'][0]['name'], EVENT)
