@@ -43,6 +43,28 @@ class BridgeTest(unittest.TestCase):
         self.bridge.store.mutate(lambda s: s.setdefault('access', {}).update({digest('test-access'): {'owner':OWNER,'scope':SCOPE,'resource':self.bridge.resource,'expires':time.time()+3600}}))
         return 'test-access'
 
+    def test_direct_chat_control_auth_and_execution_states(self):
+        path = '/control/voice-commands'
+        self.assertEqual(self.client.get(path).status_code, 403)
+        self.assertEqual(self.client.get(path+'?key=owner-control').status_code, 403)
+        self.bridge.accept('cmd_direct', 'test-call', 'Faça um resumo')
+        with patch.dict(os.environ, {'CONTROL_API_KEY':'owner-control'}):
+            auth = {'Authorization':'Bearer owner-control'}
+            self.assertEqual(self.client.get(path,headers={'Authorization':'Bearer wrong'}).status_code,403)
+            pending = self.client.get(path,headers=auth)
+            self.assertEqual(pending.json['commands'][0]['id'],'cmd_direct')
+            self.assertEqual(pending.headers['Cache-Control'],'no-store')
+            result = self.client.post(path,headers=auth,json={'action':'claim','command_id':'cmd_direct','run_id':'direct-chat-run-001'})
+            self.assertTrue(result.json['acquired'])
+            other = self.client.post(path,headers=auth,json={'action':'claim','command_id':'cmd_direct','run_id':'direct-chat-run-002'})
+            self.assertFalse(other.json['acquired'])
+            complete = {'action':'complete','command_id':'cmd_direct','run_id':'direct-chat-run-001','status':'completed','result':'Resumo entregue no chat'}
+            self.assertEqual(self.client.post(path,headers=auth,json=complete).json['status'],'completed')
+            self.assertEqual(self.client.post(path,headers=auth,json=complete).status_code,200)
+            self.assertEqual(self.client.get(path,headers=auth).json,{'commands':[]})
+            self.assertEqual(self.client.post(path,headers=auth,json={'action':'events/subscribe'}).status_code,400)
+            self.assertEqual(self.client.post(path,headers=auth,json={'action':'claim','command_id':'missing','run_id':'direct-chat-run-003'}).status_code,409)
+
     def test_discovery_and_auth(self):
         self.assertIn('events', self.rpc('server/discover').json['result']['capabilities'])
         self.assertEqual(self.rpc('events/list').json['result']['events'][0]['name'], EVENT)
@@ -128,7 +150,7 @@ class BridgeTest(unittest.TestCase):
         voice_command(self.bridge,m,'call',4,'comando para o chat')
         voice_command(self.bridge,m,'call',5,'Crie um resumo')
         response=voice_command(self.bridge,m,'call',6,'confirmar comando')
-        self.assertIn('ainda não está conectado',response)
+        self.assertIn('execute meu último comando',response)
         cmd=self.bridge.store.mutate(lambda s:list(s['commands'].values())[0])
         self.assertEqual(cmd['text'],'Crie um resumo')
         ident=cmd['id']

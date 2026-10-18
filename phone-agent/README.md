@@ -11,6 +11,18 @@ Ponte de comandos por telefone para uma conversa Work do ChatGPT. A chamada usa 
 
 O registro não é descrito como execução concluída. Se o chat ainda não estiver inscrito, a chamada informa isso. Comandos anteriores à inscrição ficam disponíveis em `list_voice_commands`, mas não geram eventos retroativos.
 
+## Modo direto nesta conversa
+
+A rota protegida `/control/voice-commands` permite ao assistente desta conversa consultar, reservar e concluir os comandos confirmados usando a credencial de controle do titular. Não exige instalação de plugin nem novo login no ChatGPT.
+
+Depois da ligação, o usuário escreve **execute meu último comando** nesta conversa. O assistente consulta a fila, lê o pedido, reserva um comando pendente e executa dentro das permissões normais. Só registra `completed` após conferir o resultado. Pedidos já em execução exigem revisão antes de outra tentativa.
+
+Esse modo não desperta a conversa automaticamente. A execução começa quando o usuário envia a mensagem no chat. A alternativa automática por eventos continua dependendo da conexão do plugin.
+
+O auxiliar `control_commands.py list --credentials-file /caminho/privado/control.json` consulta a fila sem imprimir credenciais. O arquivo privado precisa conter `control_key`; nunca deve ser publicado.
+
+API: GET `/control/voice-commands` lista pendentes/em execução; POST recebe `action` (`get`, `claim`, `complete`), `command_id`, e os argumentos das ferramentas equivalentes. Todas as operações exigem `Authorization: Bearer CONTROL_API_KEY`, nunca em URL. Não expõem inscrições nem credenciais OAuth.
+
 ## Configuração
 
 Python 3.12. Instale `pip install -r requirements.txt` e execute `gunicorn --workers 1 --threads 1 --bind 0.0.0.0:$PORT 'app:create_app()'`. No repositório com subdiretório, acrescente `--chdir phone-agent`.

@@ -332,7 +332,7 @@ class Bridge:
         app = self.app
         @app.after_request
         def private_headers(response):
-            if request.path.startswith(("/mcp", "/oauth", "/.well-known")):
+            if request.path.startswith(("/mcp", "/oauth", "/.well-known", "/control/")):
                 response.headers["Cache-Control"] = "no-store"
                 response.headers["Referrer-Policy"] = "no-referrer"
                 response.headers["X-Content-Type-Options"] = "nosniff"
@@ -342,6 +342,23 @@ class Bridge:
         @app.errorhandler(Unavailable)
         def unavailable(_error):
             return {"error": "bridge_storage_not_configured_or_unavailable"}, 503
+
+        @app.route("/control/voice-commands", methods=["GET", "POST"])
+        def direct_commands():
+            key = os.getenv("CONTROL_API_KEY", "")
+            if not key or not secrets.compare_digest(request.headers.get("Authorization", ""), "Bearer " + key):
+                abort(403)
+            if request.method == "GET":
+                return self.invoke("list_voice_commands", {})["structuredContent"]
+            body = request.get_json(silent=True)
+            actions = {"get": "get_voice_command", "claim": "claim_voice_command", "complete": "complete_voice_command"}
+            if not isinstance(body, dict) or body.get("action") not in actions:
+                return {"error": "invalid_action"}, 400
+            args = {k: v for k, v in body.items() if k != "action"}
+            try:
+                return self.invoke(actions[body["action"]], args)["structuredContent"]
+            except ValueError:
+                return {"error": "invalid_command_or_state"}, 409
 
         @app.get("/.well-known/oauth-protected-resource")
         @app.get("/.well-known/oauth-protected-resource/mcp")
@@ -555,7 +572,7 @@ def voice_command(bridge, messages, sid, turn, speech):
                 return "Não consegui salvar seu comando. Nada foi enviado ao chat. Diga confirmar comando para tentar de novo, ou cancelar comando."
             if cmd["chat_linked_at_confirmation"]:
                 return "Comando salvo para entrega ao chat. A execução e o resultado aparecerão lá."
-            return "Comando salvo. O chat ainda não está conectado, então o comando não foi executado."
+            return "Comando salvo. Para executar, escreva nesta conversa: execute meu último comando. A execução ainda não começou."
         if clean in ("cancelar", "cancelar comando", "nao", "corrigir comando"):
             return "Comando cancelado. Para outro, diga comando para o chat, seguido do pedido."
         messages.append(pending)
