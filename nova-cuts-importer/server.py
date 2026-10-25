@@ -1,5 +1,7 @@
 """Private YouTube resolver; signed, same-egress media relay for Nova Cuts."""
 import base64
+import asyncio
+import tempfile
 import hashlib
 import hmac
 import json
@@ -75,6 +77,33 @@ class QuietLog:
     def error(self, msg): pass
 
 
+async def browser_guest_session(ident):
+    import nodriver
+    browser = await nodriver.start(
+        headless=False, sandbox=False,
+        browser_executable_path=os.environ.get('WPC_BROWSER_PATH', '/usr/bin/chromium'),
+        browser_args=['--disable-dev-shm-usage'])
+    try:
+        page = await browser.get('https://www.youtube.com/watch?v=' + ident)
+        await asyncio.sleep(5)
+        await page.evaluate("document.querySelector('video')?.play().catch(() => {})")
+        await asyncio.sleep(3)
+        cookies = await browser.cookies.get_all()
+        lines = ['# Netscape HTTP Cookie File']
+        for cookie in cookies:
+            domain = cookie.domain or ''
+            if domain.lstrip('.') != 'youtube.com':
+                continue
+            lines.append('\t'.join([domain, 'TRUE' if domain.startswith('.') else 'FALSE',
+                cookie.path or '/', 'TRUE' if cookie.secure else 'FALSE',
+                str(max(0, int(cookie.expires or 0))), cookie.name, cookie.value]))
+        if len(lines) == 1:
+            raise ValueError('browser_session_unavailable')
+        return '\n'.join(lines) + '\n'
+    finally:
+        browser.stop()
+
+
 def resolve_once(value, provider="bgutil"):
     ident = video_id(value)
     logger = QuietLog()
@@ -93,8 +122,27 @@ def resolve_once(value, provider="bgutil"):
             'youtube': {'player_client': ['visionos', 'web_embedded', 'mweb'], 'player_skip': ['webpage', 'configs', 'initial_data']},
             'youtubepot-wpc': {'browser_path': [os.environ.get('WPC_BROWSER_PATH', '/usr/bin/chromium')]},
         }
-    with YoutubeDL(options) as ydl:
-        info = ydl.extract_info('https://www.youtube.com/watch?v=' + ident, download=False)
+    cookie_path = None
+    try:
+        if provider == 'wpc':
+            # This is a new anonymous session in our own server-side browser.
+            # No user cookies or account credentials are collected.
+            from nodriver import loop
+            cookie_text = loop().run_until_complete(browser_guest_session(ident))
+            fd, cookie_path = tempfile.mkstemp(prefix='nova-guest-', suffix='.txt')
+            with os.fdopen(fd, 'w') as cookie_file:
+                cookie_file.write(cookie_text)
+            options['cookiefile'] = cookie_path
+            options['extractor_args']['youtube'] = {'player_client': ['mweb', 'web_safari', 'tv']}
+            print(json.dumps({'event': 'anonymous_browser_session_created'}), file=sys.stderr, flush=True)
+        with YoutubeDL(options) as ydl:
+            info = ydl.extract_info('https://www.youtube.com/watch?v=' + ident, download=False)
+    finally:
+        if cookie_path:
+            try:
+                os.unlink(cookie_path)
+            except FileNotFoundError:
+                pass
     formats = [f for f in info.get('formats', []) if allowed_media(f.get('url', '')) and f.get('protocol') in ('https', 'http') and not f.get('has_drm')]
     videos = [f for f in formats if f.get('ext') == 'mp4' and (f.get('vcodec') or '').startswith(('avc1', 'h264')) and 0 < (f.get('height') or 0) <= 1080 and (f.get('filesize') or 0) <= MAX_BYTES]
     videos.sort(key=lambda f: ((f.get('fps') or 30) <= 30, f.get('height') or 0, f.get('acodec') != 'none'), reverse=True)

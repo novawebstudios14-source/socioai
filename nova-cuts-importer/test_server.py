@@ -1,6 +1,10 @@
 import os
 import unittest
 from unittest.mock import patch
+from unittest.mock import AsyncMock
+import asyncio
+import sys
+from types import SimpleNamespace
 os.environ['IMPORT_RESOLVER_KEY'] = 'test-secret-' * 4
 os.environ['PUBLIC_ORIGIN'] = 'https://importer.example.com'
 import server
@@ -66,5 +70,25 @@ class ResolverTests(unittest.TestCase):
     def test_persistent_login_requirement_remains_failure(self, attempt):
         with self.assertRaisesRegex(ValueError, 'youtube_login_required'):
             server.resolve('https://youtu.be/mPZC9b3DWz4')
+
+    @patch('server.browser_guest_session', new_callable=AsyncMock)
+    @patch('server.YoutubeDL')
+    def test_guest_session_file_is_private_and_deleted_on_failure(self, ydl, guest):
+        guest.return_value = '# Netscape HTTP Cookie File\n'
+        event_loop = asyncio.new_event_loop()
+        captured = {}
+        def enter(options):
+            path = options['cookiefile']
+            captured['path'] = path
+            self.assertEqual(os.stat(path).st_mode & 0o777, 0o600)
+            raise ValueError('fixture_failure')
+        ydl.side_effect = enter
+        try:
+            with patch.dict(sys.modules, {'nodriver': SimpleNamespace(loop=lambda: event_loop)}):
+                with self.assertRaisesRegex(ValueError, 'fixture_failure'):
+                    server.resolve_once('https://youtu.be/mPZC9b3DWz4', 'wpc')
+        finally:
+            event_loop.close()
+        self.assertFalse(os.path.exists(captured['path']))
 
 if __name__ == '__main__': unittest.main()

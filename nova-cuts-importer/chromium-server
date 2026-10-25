@@ -1,0 +1,3 @@
+#!/bin/sh
+# Chromium is isolated by the service container; no desktop is exposed publicly.
+exec /usr/bin/chromium --no-sandbox --disable-dev-shm-usage "$@"

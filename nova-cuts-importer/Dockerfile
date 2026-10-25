@@ -14,7 +14,8 @@ COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 COPY requirements-wpc.txt .
 RUN python3 -m venv /opt/wpc && /opt/wpc/bin/pip install --no-cache-dir -r requirements-wpc.txt
-ENV WPC_ENABLED=1 WPC_PYTHON=/opt/wpc/bin/python WPC_BROWSER_PATH=/usr/bin/chromium
-COPY server.py start.sh ./
+ENV WPC_ENABLED=1 WPC_PYTHON=/opt/wpc/bin/python WPC_BROWSER_PATH=/app/chromium-server
+COPY server.py start.sh chromium-server ./
+RUN chmod 755 /app/chromium-server
 USER node
 CMD ["bash", "start.sh"]
