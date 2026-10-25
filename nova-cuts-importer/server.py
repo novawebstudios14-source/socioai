@@ -45,7 +45,7 @@ def video_id(value):
 
 def allowed_media(value):
     u = urlparse(value)
-    return u.scheme == 'https' and not u.username and not u.password and not u.port and ((u.hostname or '').endswith('.googlevideo.com') or u.hostname == 'save.brianrianrehan.com')
+    return u.scheme == 'https' and not u.username and not u.password and not u.port and ((u.hostname or '').endswith('.googlevideo.com') or u.hostname in ('save.brianrianrehan.com', 'api.vidsnap.app'))
 
 
 def seal(payload):
@@ -176,10 +176,11 @@ def validate_media(fmt):
         if response.status_code not in (200, 206):
             raise ValueError('media_transfer_rejected')
         mime = response.headers.get('Content-Type', '').split(';')[0].lower()
-        if mime not in ('video/mp4', 'audio/mp4'):
+        if mime not in ('video/mp4', 'audio/mp4', 'audio/webm'):
             raise ValueError('invalid_media_response')
         sample = next(response.iter_content(4096), b'')
-        if len(sample) < 12 or sample[4:8] != b'ftyp':
+        valid = (mime == 'audio/webm' and sample[:4] == bytes.fromhex('1a45dfa3')) or (mime in ('video/mp4','audio/mp4') and len(sample) >= 12 and sample[4:8] == b'ftyp')
+        if not valid:
             raise ValueError('invalid_media_signature')
 
 
@@ -262,8 +263,39 @@ def external_download(value):
     return {'url': proxy, 'audioUrl': None, 'title': data.get('title') or data.get('fileName') or 'Vídeo do YouTube'}
 
 
+def alldl_download(value):
+    ident = video_id(value)
+    response = requests.get('https://ahm7xmakki.com/api/alldl',
+        params={'url': 'https://www.youtube.com/watch?v=' + ident},
+        headers=PROVIDER_HEADERS, timeout=(10, 45), allow_redirects=False)
+    if response.status_code == 429:
+        raise ValueError('provider_rate_limited')
+    if response.status_code != 200:
+        raise ValueError('provider_http_' + str(response.status_code))
+    data = response.json()
+    info = data.get('mediaInfo') or {}
+    if data.get('success') is not True or not info.get('videoUrl'):
+        raise ValueError('provider_no_media')
+    def relay(track):
+        target = info.get(track)
+        if not target:
+            return None
+        parsed = urlparse(target)
+        if parsed.scheme != 'https' or parsed.hostname != 'api.vidsnap.app' or parsed.username or parsed.password or parsed.port:
+            raise ValueError('invalid_provider_destination')
+        headers = {'User-Agent': PROVIDER_HEADERS['User-Agent']}
+        validate_media({'url': target, 'http_headers': headers})
+        return ORIGIN + '/media?token=' + seal({'url': target, 'headers': headers, 'expires': int(time.time()) + 1800})
+    video = relay('videoUrl')
+    audio = relay('audioUrl')
+    print(json.dumps({'event': 'external_media_verified', 'provider': 'alldl', 'separate_audio': bool(audio)}), file=sys.stderr, flush=True)
+    return {'url': video, 'audioUrl': audio, 'title': info.get('title') or 'Vídeo do YouTube'}
+
+
 def resolve(value, backend=None):
     video_id(value)
+    if (backend or os.environ.get('DOWNLOAD_BACKEND', 'local')) == 'alldl':
+        return alldl_download(value)
     if (backend or os.environ.get('DOWNLOAD_BACKEND', 'local')) == 'webdownloader':
         return external_download(value)
     errors = []
@@ -306,7 +338,7 @@ class Handler(BaseHTTPRequestHandler):
             body = json.loads(self.rfile.read(size))
             value = body.get('url', '')
             backend = body.get('backend')
-            if backend not in (None, 'local', 'webdownloader'):
+            if backend not in (None, 'local', 'webdownloader', 'alldl'):
                 raise ValueError('invalid_backend')
             video_id(value)
         except (ValueError, TypeError):
@@ -343,7 +375,7 @@ class Handler(BaseHTTPRequestHandler):
                 if response.status_code not in (200, 206):
                     return self.json(502, {'error': 'O YouTube recusou a transferência.'})
                 mime = response.headers.get('Content-Type', '').split(';')[0]
-                if mime not in ('video/mp4', 'audio/mp4'):
+                if mime not in ('video/mp4', 'audio/mp4', 'audio/webm'):
                     return self.json(502, {'error': 'Resposta de mídia inválida.'})
                 self.send_response(response.status_code)
                 for name in ('Content-Type', 'Content-Length', 'Content-Range', 'Accept-Ranges'):
