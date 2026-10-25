@@ -13,7 +13,7 @@ import re
 import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from urllib.parse import parse_qs, urlparse
+from urllib.parse import parse_qs, urlparse, urljoin
 import requests
 from yt_dlp import YoutubeDL
 
@@ -45,7 +45,7 @@ def video_id(value):
 
 def allowed_media(value):
     u = urlparse(value)
-    return u.scheme == 'https' and not u.username and not u.password and not u.port and (u.hostname or '').endswith('.googlevideo.com')
+    return u.scheme == 'https' and not u.username and not u.password and not u.port and ((u.hostname or '').endswith('.googlevideo.com') or u.hostname == 'save.brianrianrehan.com')
 
 
 def seal(payload):
@@ -216,8 +216,51 @@ def run_attempt(value, provider):
         process.wait()
 
 
-def resolve(value):
+PROVIDER_ORIGIN = 'https://save.brianrianrehan.com'
+
+
+def provider_url(value):
+    target = urljoin(PROVIDER_ORIGIN + '/', str(value))
+    parsed = urlparse(target)
+    if parsed.scheme != 'https' or parsed.hostname != 'save.brianrianrehan.com' or parsed.username or parsed.password or parsed.port:
+        raise ValueError('invalid_provider_destination')
+    return target
+
+
+def external_download(value):
+    ident = video_id(value)
+    response = requests.post(PROVIDER_ORIGIN + '/api/v1/download?wait=true',
+        json={'url': 'https://www.youtube.com/watch?v=' + ident,
+              'format': 'video', 'quality': '1080p', 'outputFormat': 'mp4'},
+        timeout=(10, 85), allow_redirects=False)
+    if response.status_code == 429:
+        raise ValueError('provider_rate_limited')
+    if response.status_code not in (200, 202):
+        raise ValueError('provider_http_' + str(response.status_code))
+    data = response.json()
+    print(json.dumps({'event': 'external_download_response', 'status': response.status_code,
+                      'fields': sorted(data.keys())[:20]}), file=sys.stderr, flush=True)
+    deadline = time.monotonic() + 30
+    while data.get('status') in ('pending', 'processing', 'downloading', 'converting') and time.monotonic() < deadline:
+        status_url = data.get('statusUrl') or (PROVIDER_ORIGIN + '/api/v1/download/' + str(data.get('downloadId', data.get('id', ''))))
+        time.sleep(3)
+        response = requests.get(provider_url(status_url), timeout=(10, 15), allow_redirects=False)
+        if response.status_code != 200:
+            raise ValueError('provider_status_failed')
+        data = response.json()
+    download = data.get('downloadUrl') or data.get('download_url')
+    if not download:
+        raise ValueError('provider_no_media')
+    source = provider_url(download)
+    validate_media({'url': source})
+    proxy = ORIGIN + '/media?token=' + seal({'url': source, 'headers': {}, 'expires': int(time.time()) + 1800})
+    return {'url': proxy, 'audioUrl': None, 'title': data.get('title') or data.get('fileName') or 'Vídeo do YouTube'}
+
+
+def resolve(value, backend=None):
     video_id(value)
+    if (backend or os.environ.get('DOWNLOAD_BACKEND', 'local')) == 'webdownloader':
+        return external_download(value)
     errors = []
     providers = ['bgutil']
     if os.environ.get('WPC_ENABLED', '0') == '1':
@@ -255,14 +298,18 @@ class Handler(BaseHTTPRequestHandler):
             size = int(self.headers.get('Content-Length', '0'))
             if not 0 < size <= 12000:
                 return self.json(413, {'error': 'Solicitação inválida.'})
-            value = json.loads(self.rfile.read(size)).get('url', '')
+            body = json.loads(self.rfile.read(size))
+            value = body.get('url', '')
+            backend = body.get('backend')
+            if backend not in (None, 'local', 'webdownloader'):
+                raise ValueError('invalid_backend')
             video_id(value)
         except (ValueError, TypeError):
             return self.json(400, {'error': 'Link do YouTube inválido.'})
         if not SLOTS.acquire(blocking=False):
             return self.json(429, {'error': 'Importador ocupado. Tente em instantes.'})
         try:
-            self.json(200, resolve(value))
+            self.json(200, resolve(value, backend))
         except Exception as exc:
             text = str(exc).lower()
             login = any(t in text for t in ('not a bot', 'sign in', 'login_required'))
