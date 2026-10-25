@@ -81,13 +81,13 @@ def resolve_once(value, provider="bgutil"):
         'extractor_retries': 1, 'cachedir': False,
         'js_runtimes': {'node': {}},
         'extractor_args': {
-            'youtube': {'player_client': ['mweb']},
+            'youtube': {'player_client': ['mweb', 'tv', 'web_safari', 'web_embedded', 'android_vr']},
             'youtubepot-bgutilhttp': {'base_url': ['http://127.0.0.1:4416']},
         },
     }
     if provider == 'wpc':
         options['extractor_args'] = {
-            'youtube': {'player_client': ['mweb']},
+            'youtube': {'player_client': ['mweb', 'tv', 'web_safari', 'web_embedded', 'android_vr']},
             'youtubepot-wpc': {'browser_path': [os.environ.get('WPC_BROWSER_PATH', '/usr/bin/chromium')]},
         }
     with YoutubeDL(options) as ydl:

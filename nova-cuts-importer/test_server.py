@@ -36,7 +36,8 @@ class ResolverTests(unittest.TestCase):
         self.assertEqual(video['url'], 'https://rr1.googlevideo.com/video1080')
         self.assertEqual(audio['url'], 'https://rr1.googlevideo.com/audio128')
         args = mock.call_args.args[0]
-        self.assertEqual(args['extractor_args']['youtube']['player_client'], ['mweb'])
+        self.assertIn('mweb', args['extractor_args']['youtube']['player_client'])
+        self.assertIn('web_safari', args['extractor_args']['youtube']['player_client'])
         self.assertIn('youtubepot-bgutilhttp', args['extractor_args'])
         self.assertEqual(validate.call_count, 2)
 
