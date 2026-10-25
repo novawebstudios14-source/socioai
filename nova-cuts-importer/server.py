@@ -67,7 +67,10 @@ def unseal(token):
 
 
 class QuietLog:
-    def debug(self, msg): pass
+    def debug(self, msg):
+        match = re.search(r'([a-z_]+) player response playability status: ([A-Z_]+)', str(msg))
+        if match:
+            print(json.dumps({'event': 'youtube_playability', 'client': match[1], 'status': match[2]}), file=sys.stderr, flush=True)
     def warning(self, msg): pass
     def error(self, msg): pass
 
@@ -76,18 +79,18 @@ def resolve_once(value, provider="bgutil"):
     ident = video_id(value)
     logger = QuietLog()
     options = {
-        'quiet': True, 'logger': logger, 'noplaylist': True,
+        'quiet': True, 'verbose': True, 'logger': logger, 'noplaylist': True,
         'skip_download': True, 'socket_timeout': 15, 'retries': 1,
         'extractor_retries': 1, 'cachedir': False,
         'js_runtimes': {'node': {}},
         'extractor_args': {
-            'youtube': {'player_client': ['mweb', 'tv', 'web_safari', 'web_embedded', 'android_vr']},
+            'youtube': {'player_client': ['visionos', 'web_embedded', 'mweb'], 'player_skip': ['webpage', 'configs', 'initial_data']},
             'youtubepot-bgutilhttp': {'base_url': ['http://127.0.0.1:4416']},
         },
     }
     if provider == 'wpc':
         options['extractor_args'] = {
-            'youtube': {'player_client': ['mweb', 'tv', 'web_safari', 'web_embedded', 'android_vr']},
+            'youtube': {'player_client': ['visionos', 'web_embedded', 'mweb'], 'player_skip': ['webpage', 'configs', 'initial_data']},
             'youtubepot-wpc': {'browser_path': [os.environ.get('WPC_BROWSER_PATH', '/usr/bin/chromium')]},
         }
     with YoutubeDL(options) as ydl:
