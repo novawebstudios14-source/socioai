@@ -1,3 +1,6 @@
 #!/bin/sh
 # Chromium is isolated by the service container; no desktop is exposed publicly.
-exec /usr/bin/chromium --no-sandbox --disable-dev-shm-usage "$@"
+export HOME=/home/node
+export XDG_CONFIG_HOME=/tmp/nova-chromium-config
+export XDG_CACHE_HOME=/tmp/nova-chromium-cache
+exec /usr/bin/chromium --no-sandbox --disable-dev-shm-usage --disable-gpu --no-zygote --renderer-process-limit=1 --disable-breakpad --disable-crash-reporter "$@"
