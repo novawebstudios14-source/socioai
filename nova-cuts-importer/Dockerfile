@@ -14,6 +14,8 @@ COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 COPY requirements-wpc.txt .
 RUN python3 -m venv /opt/wpc && /opt/wpc/bin/pip install --no-cache-dir -r requirements-wpc.txt
+# The free instance can take longer than nodriver's default 2.75s to start Chrome.
+RUN /opt/wpc/bin/python -c "from pathlib import Path; import nodriver.core.browser; p=Path(nodriver.core.browser.__file__); s=p.read_text(); assert s.count('for _ in range(5):') == 1; p.write_text(s.replace('for _ in range(5):', 'for _ in range(40):'))"
 ENV HOME=/home/node XDG_CONFIG_HOME=/tmp/nova-chromium-config XDG_CACHE_HOME=/tmp/nova-chromium-cache
 ENV WPC_ENABLED=1 WPC_PYTHON=/opt/wpc/bin/python WPC_BROWSER_PATH=/app/chromium-server
 COPY server.py start.sh chromium-server ./
