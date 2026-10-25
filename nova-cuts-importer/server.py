@@ -217,6 +217,7 @@ def run_attempt(value, provider):
 
 
 PROVIDER_ORIGIN = 'https://save.brianrianrehan.com'
+PROVIDER_HEADERS = {'User-Agent': 'NovaCutsImporter/1.0', 'Accept': 'application/json'}
 
 
 def provider_url(value):
@@ -229,7 +230,7 @@ def provider_url(value):
 
 def external_download(value):
     ident = video_id(value)
-    response = requests.post(PROVIDER_ORIGIN + '/api/v1/download?wait=true',
+    response = requests.post(PROVIDER_ORIGIN + '/api/v1/download?wait=true', headers=PROVIDER_HEADERS,
         json={'url': 'https://www.youtube.com/watch?v=' + ident,
               'format': 'video', 'quality': '1080p', 'outputFormat': 'mp4'},
         timeout=(10, 85), allow_redirects=False)
@@ -238,16 +239,20 @@ def external_download(value):
     if response.status_code not in (200, 202):
         raise ValueError('provider_http_' + str(response.status_code))
     data = response.json()
+    if isinstance(data.get('data'), dict):
+        data = data['data']
     print(json.dumps({'event': 'external_download_response', 'status': response.status_code,
                       'fields': sorted(data.keys())[:20]}), file=sys.stderr, flush=True)
     deadline = time.monotonic() + 30
     while data.get('status') in ('pending', 'processing', 'downloading', 'converting') and time.monotonic() < deadline:
         status_url = data.get('statusUrl') or (PROVIDER_ORIGIN + '/api/v1/download/' + str(data.get('downloadId', data.get('id', ''))))
         time.sleep(3)
-        response = requests.get(provider_url(status_url), timeout=(10, 15), allow_redirects=False)
+        response = requests.get(provider_url(status_url), headers=PROVIDER_HEADERS, timeout=(10, 15), allow_redirects=False)
         if response.status_code != 200:
             raise ValueError('provider_status_failed')
         data = response.json()
+        if isinstance(data.get('data'), dict):
+            data = data['data']
     download = data.get('downloadUrl') or data.get('download_url')
     if not download:
         raise ValueError('provider_no_media')

@@ -91,4 +91,24 @@ class ResolverTests(unittest.TestCase):
             event_loop.close()
         self.assertFalse(os.path.exists(captured['path']))
 
+    @patch('server.validate_media')
+    @patch('server.requests.post')
+    def test_external_api_requires_verified_media(self, post, validate):
+        post.return_value.status_code = 200
+        post.return_value.json.return_value = {'status':'completed','title':'Fixture','downloadUrl':'/api/v1/download/fixture/file?token=fixture'}
+        result = server.external_download('https://youtu.be/mPZC9b3DWz4')
+        self.assertEqual(result['title'], 'Fixture')
+        validate.assert_called_once()
+        self.assertTrue(result['url'].startswith(server.ORIGIN + '/media?token='))
+
+    @patch('server.requests.post')
+    @patch('server.requests.get')
+    def test_external_rate_limit_has_no_retry(self, get, post):
+        post.return_value.status_code = 429
+        with self.assertRaisesRegex(ValueError, 'provider_rate_limited'):
+            server.external_download('https://youtu.be/mPZC9b3DWz4')
+        get.assert_not_called()
+        for url in ['https://127.0.0.1/file','https://save.brianrianrehan.com.evil.com/file','https://user:pass@save.brianrianrehan.com/file']:
+            with self.assertRaises(ValueError): server.provider_url(url)
+
 if __name__ == '__main__': unittest.main()
