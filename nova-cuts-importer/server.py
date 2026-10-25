@@ -187,10 +187,18 @@ def run_attempt(value, provider):
     interpreter = os.environ.get('WPC_PYTHON', '/opt/wpc/bin/python') if provider == 'wpc' else sys.executable
     process = subprocess.Popen(
         [interpreter, os.path.abspath(__file__), '--resolve-once', provider],
-        stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+        stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
         text=True, start_new_session=True)
     try:
-        raw, _ = process.communicate(json.dumps({'url': value}), timeout=75)
+        raw, diagnostics = process.communicate(json.dumps({'url': value}), timeout=75)
+        for line in diagnostics.splitlines()[-100:]:
+            try:
+                record = json.loads(line)
+                if record.get('event') in ('youtube_playability', 'anonymous_browser_session_created', 'resolver_worker_failed'):
+                    safe = {key: record[key] for key in ('event', 'client', 'status', 'exception', 'reason') if key in record}
+                    print(json.dumps(safe), file=sys.stderr, flush=True)
+            except (ValueError, TypeError, AttributeError):
+                pass
         if len(raw) > 100000:
             raise ValueError('resolver_invalid_output')
         data = json.loads(raw)
@@ -311,6 +319,8 @@ if __name__ == '__main__':
             print(json.dumps(result), flush=True)
         except Exception as exc:
             message = str(exc).lower()
+            reason = next((label for text, label in [('no running event loop','event_loop_missing'), ('no current event loop','event_loop_missing'), ('connection refused','browser_connection_refused'), ('failed to connect','browser_connect_failed'), ('no such file','missing_file'), ('invalid_media','invalid_media'), ('browser_session_unavailable','guest_session_unavailable')] if text in message), 'other')
+            print(json.dumps({'event':'resolver_worker_failed','exception':type(exc).__name__,'reason':reason}),file=sys.stderr,flush=True)
             code = 'youtube_login_required' if any(x in message for x in ('not a bot', 'sign in', 'login_required')) else 'resolver_failed'
             print(json.dumps({'error': code}), flush=True)
             sys.exit(1)
