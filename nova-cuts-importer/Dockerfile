@@ -5,7 +5,7 @@ WORKDIR /provider/server
 RUN npm ci && npx tsc && npm prune --omit=dev
 
 FROM node:22-bookworm-slim
-RUN apt-get update && apt-get install -y --no-install-recommends python3 python3-venv ca-certificates chromium xvfb xauth fonts-liberation && rm -rf /var/lib/apt/lists/*
+RUN apt-get update && apt-get install -y --no-install-recommends python3 python3-venv ca-certificates ffmpeg chromium xvfb xauth fonts-liberation && rm -rf /var/lib/apt/lists/*
 RUN python3 -m venv /opt/venv
 ENV PATH="/opt/venv/bin:$PATH" PYTHONUNBUFFERED=1
 COPY --from=provider /provider/server /provider/server
@@ -20,7 +20,7 @@ ENV HOME=/home/node XDG_CONFIG_HOME=/tmp/nova-chromium-config XDG_CACHE_HOME=/tm
 ENV WPC_ENABLED=1 WPC_PYTHON=/opt/wpc/bin/python WPC_BROWSER_PATH=/app/chromium-server
 COPY mediafetch /app/mediafetch
 RUN python3 -m venv /opt/mediafetch && /opt/mediafetch/bin/pip install --no-cache-dir -r /app/mediafetch/requirements.txt
-COPY server.py videoscale.py start.sh chromium-server ./
+COPY server.py videoscale.py kick.py start.sh chromium-server ./
 RUN chmod 755 /app/chromium-server
 USER node
 CMD ["bash", "start.sh"]

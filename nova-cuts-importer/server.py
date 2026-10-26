@@ -63,7 +63,7 @@ def unseal(token):
     if not hmac.compare_digest(sig, expected):
         raise ValueError('Token inválido.')
     payload = json.loads(base64.urlsafe_b64decode(data + '=' * (-len(data) % 4)))
-    if payload['expires'] < time.time() or not allowed_media(payload['url']):
+    if payload['expires'] < time.time() or (not payload.get('kick_file') and not allowed_media(payload['url'])):
         raise ValueError('Mídia expirada.')
     return payload
 
@@ -347,7 +347,7 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(raw)
     def do_POST(self):
-        if self.path != '/resolve':
+        if self.path not in ('/resolve', '/kick'):
             return self.json(404, {'error': 'Rota desconhecida.'})
         if not hmac.compare_digest(self.headers.get('Authorization', ''), 'Bearer ' + KEY):
             return self.json(401, {'error': 'Não autorizado.'})
@@ -360,14 +360,27 @@ class Handler(BaseHTTPRequestHandler):
             backend = body.get('backend')
             if backend not in (None, 'local', 'webdownloader', 'alldl', 'videoscale', 'mediafetch'):
                 raise ValueError('invalid_backend')
-            video_id(value)
+            if self.path == '/kick':
+                from kick import parse_url
+                parse_url(value)
+            else:
+                video_id(value)
         except (ValueError, TypeError):
             return self.json(400, {'error': 'Link do YouTube inválido.'})
         if not SLOTS.acquire(blocking=False):
             return self.json(429, {'error': 'Importador ocupado. Tente em instantes.'})
         try:
-            self.json(200, resolve(value, backend))
+            if self.path == '/kick':
+                from kick import capture
+                d = capture(value, body.get('start', 0), body.get('duration', 60))
+                token = seal({'kick_file':d['id'],'expires':int(time.time())+3600})
+                self.json(200, {**d,'url':ORIGIN+'/kick-media?token='+token})
+            else:
+                self.json(200, resolve(value, backend))
         except Exception as exc:
+            if self.path == '/kick':
+                from kick import KickError
+                return self.json(422 if isinstance(exc, KickError) else 502, {'error':str(exc) if isinstance(exc, KickError) else 'Não foi possível preparar o trecho da Kick.'})
             text = str(exc).lower()
             login = any(t in text for t in ('not a bot', 'sign in', 'login_required'))
             self.json(422 if login else 502, {'code': 'youtube_login_required' if login else 'resolver_failed', 'error': 'O YouTube exigiu login para confirmar que o servidor não é um robô.' if login else 'O importador não conseguiu obter uma mídia compatível.'})
@@ -377,6 +390,35 @@ class Handler(BaseHTTPRequestHandler):
         u = urlparse(self.path)
         if u.path == '/health':
             return self.json(200, {'ok': True, 'engine': 'yt-dlp', 'providers': ['bgutil', 'wpc'] if os.environ.get('WPC_ENABLED') == '1' else ['bgutil']})
+        if u.path == '/kick-media':
+            try:
+                from kick import local_path
+                payload = unseal(parse_qs(u.query).get('token', [''])[0])
+                path = local_path(payload.get('kick_file'))
+                size = path.stat().st_size
+                start, end = 0, size-1
+                byte_range = self.headers.get('Range', '')
+                if byte_range:
+                    m = re.fullmatch(r'bytes=(\d+)-(\d*)', byte_range)
+                    if not m: return self.json(416, {'error':'Intervalo inválido.'})
+                    start, end = int(m[1]), min(size-1,int(m[2])) if m[2] else size-1
+                    if start>end or start>=size: return self.json(416, {'error':'Intervalo inválido.'})
+                self.send_response(206 if byte_range else 200)
+                self.send_header('Content-Type','video/mp4')
+                self.send_header('Content-Length',str(end-start+1))
+                self.send_header('Accept-Ranges','bytes')
+                self.send_header('Cache-Control','private, no-store')
+                if byte_range: self.send_header('Content-Range',f'bytes {start}-{end}/{size}')
+                self.end_headers()
+                with path.open('rb') as f:
+                    f.seek(start); remaining=end-start+1
+                    while remaining:
+                        chunk=f.read(min(65536,remaining))
+                        if not chunk: break
+                        self.wfile.write(chunk); remaining-=len(chunk)
+            except (BrokenPipeError,ConnectionResetError): pass
+            except Exception: return self.json(403, {'error':'Trecho inválido ou expirado.'})
+            return
         if u.path != '/media':
             return self.json(404, {'error': 'Rota desconhecida.'})
         try:
