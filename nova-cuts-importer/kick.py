@@ -109,17 +109,25 @@ def local_path(ident):
     return p
 
 def capture(value,start=0,duration=60,mode="recent"):
-    if mode not in ("recent","forward"): raise KickError("Modo de captura inválido.")
+    if mode not in ("recent","forward","buffer"): raise KickError("Modo de captura inválido.")
     start=float(start);duration=float(duration)
     if not math.isfinite(start) or not math.isfinite(duration) or start<0 or not 15<=duration<=300: raise KickError('Escolha de 15 a 300 segundos e um início válido.')
     for p in ROOT.glob('*.mp4'):
         if p.stat().st_mtime<time.time()-3600: p.unlink(missing_ok=True)
     if sum(p.stat().st_size for p in ROOT.glob('*.mp4'))>300*1024*1024: raise KickError('Armazenamento temporário ocupado. Tente mais tarde.')
-    url,title,live=metadata(value)
+    if mode == 'buffer':
+        title,selected,offset,available=buffered(value,duration);live=True
+    else:
+        url,title,live=metadata(value)
     if live and duration>90: raise KickError('Na live ao vivo, capture até 90 segundos por vez.')
-    media,rows,ended=playlist(url)
+    if mode != 'buffer':
+        media,rows,ended=playlist(url)
+    else:
+        rows=selected
     if not rows: raise KickError('A transmissão ainda não entregou segmentos de vídeo.')
-    if live and mode == 'recent':
+    if mode == 'buffer':
+        pass
+    elif live and mode == 'recent':
         available=sum(seconds for _,seconds in rows)
         selected,offset=select(rows,max(0,available-duration),duration)
     elif live:
@@ -144,7 +152,7 @@ def capture(value,start=0,duration=60,mode="recent"):
                 with ThreadPoolExecutor(max_workers=3) as pool:
                     for index in range(0,len(selected),3):
                         batch=selected[index:index+3]
-                        for chunk in pool.map(lambda row:get(row[0],max_bytes=20*1024*1024),batch):
+                        for chunk in pool.map(lambda row:row[0] if isinstance(row[0],bytes) else get(row[0],max_bytes=20*1024*1024),batch):
                             total+=len(chunk)
                             if total>LIMIT: raise KickError('O trecho ultrapassou o limite de transferência.')
                             f.write(chunk)
@@ -153,3 +161,79 @@ def capture(value,start=0,duration=60,mode="recent"):
         return {'id':ident,'title':title,'live':live,'size':target.stat().st_size,'start':0 if live else start,'captureMode':mode if live else 'vod'}
     except Exception:
         target.unlink(missing_ok=True);raise
+
+# Temporary rolling DVR: collected only while the live panel sends heartbeats.
+WATCHES = {}
+WATCH_LOCK = threading.Lock()
+class Watch:
+    def __init__(self, channel):
+        self.channel=channel; self.title=channel; self.chatroom=0; self.rows=[]
+        self.lock=threading.Lock();self.touched=time.monotonic();self.error=None;self.live=None
+        self.directory=Path(tempfile.mkdtemp(prefix='kick-dvr-'));self.media=None;self.seen=set()
+        threading.Thread(target=self.run,daemon=True).start()
+    def status(self):
+        self.touched=time.monotonic()
+        with self.lock:
+            return {'channel':self.channel,'title':self.title,'chatroomId':self.chatroom,'bufferSeconds':round(sum(x[1] for x in self.rows),1),'live':self.live,'error':self.error}
+    def run(self):
+        try:
+            data=json.loads(get('https://kick.com/api/v2/channels/'+self.channel,True))
+            self.chatroom=int((data.get('chatroom') or {}).get('id') or 0)
+            self.live=bool(data.get('livestream'))
+            if not self.live: raise KickError('O canal está offline.')
+            self.title=data['livestream'].get('session_title') or self.channel
+            self.media=safe_url(data['playback_url'])
+            while time.monotonic()-self.touched<120:
+                try:
+                    self.tick();self.error=None
+                except Exception:
+                    self.error='Aguardando novos segmentos da Kick.'
+                time.sleep(2)
+        except Exception as e:
+            self.error=str(e) if isinstance(e,KickError) else 'Não foi possível acompanhar esta live.'
+            # Keep the error available for the panel instead of restarting continuously.
+            while time.monotonic()-self.touched<120:time.sleep(2)
+        finally:
+            with WATCH_LOCK:
+                if WATCHES.get(self.channel) is self:WATCHES.pop(self.channel,None)
+            import shutil
+            with self.lock:shutil.rmtree(self.directory,ignore_errors=True);self.rows=[]
+    def tick(self):
+        media,rows,ended=playlist(self.media);self.media=media
+        new=[row for row in rows if row[0] not in self.seen]
+        with ThreadPoolExecutor(max_workers=3) as pool:
+            for index in range(0,len(new),3):
+                batch=new[index:index+3]
+                for (url,duration),raw in zip(batch,pool.map(lambda row:get(row[0],max_bytes=12*1024*1024),batch)):
+                    path=self.directory/(secrets.token_hex(12)+'.ts');path.write_bytes(raw)
+                    with self.lock:
+                        self.rows.append((path,duration));self.seen.add(url)
+                        while len(self.rows)>1 and (sum(x[1] for x in self.rows)>150 or sum(x[0].stat().st_size for x in self.rows)>90*1024*1024):
+                            old,_=self.rows.pop(0);old.unlink(missing_ok=True)
+        # Retain only recent playlist IDs; downloaded fragments live in the bounded DVR.
+        self.seen.intersection_update(url for url,_ in rows)
+        if ended:self.live=False
+    def snapshot(self,duration):
+        with self.lock:
+            available=sum(x[1] for x in self.rows)
+            if available<15:raise KickError('O histórico ainda está sendo preenchido. Aguarde pelo menos 15 segundos disponíveis.')
+            selected,offset=select(self.rows,max(0,available-duration),duration)
+            return [(path.read_bytes(),seconds) for path,seconds in selected],offset,available
+
+def watch(value):
+    channel,ident=parse_url(value)
+    if ident or not channel:raise KickError('Abra um canal ao vivo para acompanhar e clipar.')
+    with WATCH_LOCK:
+        current=WATCHES.get(channel)
+        if current is None:
+            if len(WATCHES)>=2:raise KickError('O servidor está acompanhando dois canais. Aguarde para abrir outro.')
+            current=Watch(channel);WATCHES[channel]=current
+    return current.status()
+
+def buffered(value,duration):
+    channel,ident=parse_url(value)
+    with WATCH_LOCK:current=WATCHES.get(channel)
+    if not current or ident:raise KickError('Abra o painel da live antes de clipar o histórico.')
+    current.touched=time.monotonic()
+    rows,offset,available=current.snapshot(duration)
+    return current.title,rows,offset,available

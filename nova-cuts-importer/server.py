@@ -347,7 +347,7 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(raw)
     def do_POST(self):
-        if self.path not in ('/resolve', '/kick'):
+        if self.path not in ('/resolve', '/kick', '/kick-watch'):
             return self.json(404, {'error': 'Rota desconhecida.'})
         if not hmac.compare_digest(self.headers.get('Authorization', ''), 'Bearer ' + KEY):
             return self.json(401, {'error': 'Não autorizado.'})
@@ -360,7 +360,7 @@ class Handler(BaseHTTPRequestHandler):
             backend = body.get('backend')
             if backend not in (None, 'local', 'webdownloader', 'alldl', 'videoscale', 'mediafetch'):
                 raise ValueError('invalid_backend')
-            if self.path == '/kick':
+            if self.path in ('/kick', '/kick-watch'):
                 from kick import parse_url
                 parse_url(value)
             else:
@@ -370,6 +370,9 @@ class Handler(BaseHTTPRequestHandler):
         if not SLOTS.acquire(blocking=False):
             return self.json(429, {'error': 'Importador ocupado. Tente em instantes.'})
         try:
+            if self.path == '/kick-watch':
+                from kick import watch
+                return self.json(200,watch(value))
             if self.path == '/kick':
                 from kick import capture
                 d = capture(value, body.get('start', 0), body.get('duration', 60), body.get('mode', 'recent'))
@@ -378,7 +381,7 @@ class Handler(BaseHTTPRequestHandler):
             else:
                 self.json(200, resolve(value, backend))
         except Exception as exc:
-            if self.path == '/kick':
+            if self.path in ('/kick','/kick-watch'):
                 from kick import KickError
                 return self.json(422 if isinstance(exc, KickError) else 502, {'error':str(exc) if isinstance(exc, KickError) else 'Não foi possível preparar o trecho da Kick.'})
             text = str(exc).lower()
