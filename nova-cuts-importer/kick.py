@@ -168,17 +168,27 @@ WATCH_LOCK = threading.Lock()
 class Watch:
     def __init__(self, channel):
         self.channel=channel; self.title=channel; self.chatroom=0; self.rows=[]
-        self.lock=threading.Lock();self.touched=time.monotonic();self.error=None;self.live=None
+        self.lock=threading.Lock();self.channel_id=None
+        from kick_chat import initialize
+        initialize(self)
+        self.touched=time.monotonic();self.error=None;self.live=None
         self.directory=Path(tempfile.mkdtemp(prefix='kick-dvr-'));self.media=None;self.seen=set()
         threading.Thread(target=self.run,daemon=True).start()
+    def add_message(self,data):
+        from kick_chat import add_message
+        add_message(self,data)
     def status(self):
         self.touched=time.monotonic()
         with self.lock:
-            return {'channel':self.channel,'title':self.title,'chatroomId':self.chatroom,'bufferSeconds':round(sum(x[1] for x in self.rows),1),'live':self.live,'error':self.error}
+            return {'channel':self.channel,'title':self.title,'chatroomId':self.chatroom,'bufferSeconds':round(sum(x[1] for x in self.rows),1),'live':self.live,'error':self.error,**__import__('kick_chat').snapshot(self)}
     def run(self):
         try:
             data=json.loads(get('https://kick.com/api/v2/channels/'+self.channel,True))
             self.chatroom=int((data.get('chatroom') or {}).get('id') or 0)
+            self.channel_id=int(data['id'])
+            if self.chatroom:
+                from kick_chat import run
+                threading.Thread(target=run,args=(self,),daemon=True).start()
             self.live=bool(data.get('livestream'))
             if not self.live: raise KickError('O canal está offline.')
             self.title=data['livestream'].get('session_title') or self.channel
