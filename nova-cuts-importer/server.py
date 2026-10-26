@@ -45,7 +45,7 @@ def video_id(value):
 
 def allowed_media(value):
     u = urlparse(value)
-    return u.scheme == 'https' and not u.username and not u.password and not u.port and ((u.hostname or '').endswith('.googlevideo.com') or u.hostname in ('save.brianrianrehan.com', 'api.vidsnap.app'))
+    return u.scheme == 'https' and not u.username and not u.password and not u.port and ((u.hostname or '').endswith('.googlevideo.com') or u.hostname in ('save.brianrianrehan.com', 'api.vidsnap.app') or (u.hostname == 's3.fr-par.scw.cloud' and u.path.startswith('/youtube-download/downloads/')))
 
 
 def seal(payload):
@@ -135,8 +135,15 @@ def resolve_once(value, provider="bgutil"):
             options['cookiefile'] = cookie_path
             options['extractor_args']['youtube'] = {'player_client': ['mweb', 'web_safari', 'tv']}
             print(json.dumps({'event': 'anonymous_browser_session_created'}), file=sys.stderr, flush=True)
-        with YoutubeDL(options) as ydl:
-            info = ydl.extract_info('https://www.youtube.com/watch?v=' + ident, download=False)
+        if provider == 'mediafetch':
+            sys.path.insert(0, os.path.join(os.path.dirname(__file__), 'mediafetch'))
+            os.environ.setdefault('TOKEN_SECRET', KEY)
+            os.environ.setdefault('APP_ENV', 'production')
+            from app.services.extractor import _extract_sync
+            info = _extract_sync('https://www.youtube.com/watch?v=' + ident)
+        else:
+            with YoutubeDL(options) as ydl:
+                info = ydl.extract_info('https://www.youtube.com/watch?v=' + ident, download=False)
     finally:
         if cookie_path:
             try:
@@ -186,10 +193,13 @@ def validate_media(fmt):
 
 def run_attempt(value, provider):
     interpreter = os.environ.get('WPC_PYTHON', '/opt/wpc/bin/python') if provider == 'wpc' else sys.executable
+    if provider == 'mediafetch':
+        interpreter = '/opt/mediafetch/bin/python'
     process = subprocess.Popen(
         [interpreter, os.path.abspath(__file__), '--resolve-once', provider],
         stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-        text=True, start_new_session=True)
+        text=True, start_new_session=True,
+        env={**os.environ, 'PATH': '/opt/mediafetch/bin:' + os.environ.get('PATH', '')} if provider == 'mediafetch' else None)
     try:
         raw, diagnostics = process.communicate(json.dumps({'url': value}), timeout=75)
         for line in diagnostics.splitlines()[-100:]:
@@ -294,6 +304,16 @@ def alldl_download(value):
 
 def resolve(value, backend=None):
     video_id(value)
+    if backend == 'videoscale' or (backend is None and os.environ.get('VIDEOSCALE_AUTH')):
+        from videoscale import download
+        result = download('https://www.youtube.com/watch?v=' + video_id(value))
+        for field in ('url', 'audioUrl'):
+            validate_media({'url': result[field]})
+            result[field] = ORIGIN + '/media?token=' + seal({'url': result[field], 'headers': {}, 'expires': int(time.time()) + 1800})
+        result['title'] = result.get('title') or 'Vídeo do YouTube'
+        return result
+    if (backend or os.environ.get('DOWNLOAD_BACKEND', 'local')) == 'mediafetch':
+        return run_attempt(value, 'mediafetch')
     if (backend or os.environ.get('DOWNLOAD_BACKEND', 'local')) == 'alldl':
         return alldl_download(value)
     if (backend or os.environ.get('DOWNLOAD_BACKEND', 'local')) == 'webdownloader':
@@ -338,7 +358,7 @@ class Handler(BaseHTTPRequestHandler):
             body = json.loads(self.rfile.read(size))
             value = body.get('url', '')
             backend = body.get('backend')
-            if backend not in (None, 'local', 'webdownloader', 'alldl'):
+            if backend not in (None, 'local', 'webdownloader', 'alldl', 'videoscale', 'mediafetch'):
                 raise ValueError('invalid_backend')
             video_id(value)
         except (ValueError, TypeError):
