@@ -367,12 +367,15 @@ class Handler(BaseHTTPRequestHandler):
                 video_id(value)
         except (ValueError, TypeError):
             return self.json(400, {'error': 'Link do YouTube inválido.'})
+        if self.path == '/kick-watch':
+            try:
+                from kick import watch, KickError
+                return self.json(200,watch(value))
+            except KickError as exc:
+                return self.json(422,{'error':str(exc)})
         if not SLOTS.acquire(blocking=False):
             return self.json(429, {'error': 'Importador ocupado. Tente em instantes.'})
         try:
-            if self.path == '/kick-watch':
-                from kick import watch
-                return self.json(200,watch(value))
             if self.path == '/kick':
                 from kick import capture
                 d = capture(value, body.get('start', 0), body.get('duration', 60), body.get('mode', 'recent'))
