@@ -36,7 +36,7 @@ def resolve(value):
  raise KickError('A live não disponibilizou vídeo H.264 compatível.')
 class Watch:
  def __init__(self,channel):
-  self.channel=channel;self.title=channel;self.error=None;self.live=True;self.touched=time.monotonic();self.directory=Path(tempfile.mkdtemp(prefix='tiktok-dvr-'));self.lock=threading.Lock();self.process=None
+  self.channel=channel;self.title=channel;self.error=None;self.live=True;self.failed_at=None;self.session_id=secrets.token_hex(8);self.touched=time.monotonic();self.directory=Path(tempfile.mkdtemp(prefix='tiktok-dvr-'));self.lock=threading.Lock();self.process=None
   threading.Thread(target=self.run,daemon=True).start()
  def rows(self):
   path=self.directory/'live.m3u8'
@@ -53,7 +53,7 @@ class Watch:
  def status(self):
   self.touched=time.monotonic()
   with self.lock:rows=self.rows()
-  return {'platform':'tiktok','channel':self.channel,'title':self.title,'bufferSeconds':round(sum(d for _,d in rows),1),'live':self.live,'error':self.error,'chatStatus':'unavailable','messages':[]}
+  return {'platform':'tiktok','sessionId':self.session_id,'channel':self.channel,'title':self.title,'bufferSeconds':round(sum(d for _,d in rows),1),'live':self.live,'error':self.error,'chatStatus':'unavailable','messages':[]}
  def run(self):
   try:
    _,self.title,url=resolve('https://www.tiktok.com/@'+self.channel+'/live')
@@ -76,6 +76,8 @@ class Watch:
   except Exception as e:
    self.live=False;self.error=str(e) if isinstance(e,KickError) else 'A conexão de vídeo do TikTok foi interrompida. Reabra a live.'
   finally:
+   self.failed_at=time.monotonic()
+   if not self.error:self.error='A conexão da live terminou. Reconectando…'
    if self.process:
     try:self.process.stdin.close();self.process.wait(timeout=5)
     except Exception:self.process.kill();self.process.wait()
@@ -87,6 +89,8 @@ def watch(value):
  channel=parse_url(value)
  with LOCK:
   current=WATCHES.get(channel)
+  if current and not current.live and current.failed_at and time.monotonic()-current.failed_at>=15:
+   WATCHES.pop(channel,None);current=None
   if not current:
    if len(WATCHES)>=1:raise KickError('O servidor já acompanha uma live do TikTok. Feche o painel anterior e aguarde 2 minutos.')
    current=Watch(channel);WATCHES[channel]=current
