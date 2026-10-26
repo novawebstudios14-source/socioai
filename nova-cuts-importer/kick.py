@@ -1,5 +1,6 @@
 """Kick public HLS → bounded, local MP4. Every upstream URL is allowlisted."""
-import json, math, os, re, secrets, subprocess, tempfile, time
+import json, math, os, re, secrets, subprocess, tempfile, time, threading
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from urllib.parse import urlparse, urljoin
 import requests
@@ -7,7 +8,10 @@ import requests
 ROOT = Path(tempfile.gettempdir()) / 'novacuts-kick'
 ROOT.mkdir(mode=0o700, exist_ok=True)
 LIMIT = 100 * 1024 * 1024
-SESSION = requests.Session()
+SESSIONS = threading.local()
+def session():
+    if not hasattr(SESSIONS,"client"): SESSIONS.client=requests.Session()
+    return SESSIONS.client
 
 class KickError(ValueError): pass
 
@@ -31,7 +35,7 @@ def safe_url(value, api=False):
 
 def get(value, api=False, body=None, max_bytes=2*1024*1024):
     safe_url(value, api)
-    with SESSION.request('POST' if body is not None else 'GET', value, json=body,
+    with session().request('POST' if body is not None else 'GET', value, json=body,
             headers={'User-Agent':'Mozilla/5.0','Origin':'https://kick.com','Referer':'https://kick.com/'},
             timeout=(8,20), allow_redirects=False, stream=True) as r:
         if not r.ok: raise KickError('A Kick recusou o acesso à transmissão (%s). Use uma live ou gravação pública disponível.' % r.status_code)
@@ -104,7 +108,8 @@ def local_path(ident):
     if not p.is_file() or p.stat().st_mtime<time.time()-3600: raise KickError('O trecho expirou. Importe novamente.')
     return p
 
-def capture(value,start=0,duration=60):
+def capture(value,start=0,duration=60,mode="recent"):
+    if mode not in ("recent","forward"): raise KickError("Modo de captura inválido.")
     start=float(start);duration=float(duration)
     if not math.isfinite(start) or not math.isfinite(duration) or start<0 or not 15<=duration<=300: raise KickError('Escolha de 15 a 300 segundos e um início válido.')
     for p in ROOT.glob('*.mp4'):
@@ -114,7 +119,10 @@ def capture(value,start=0,duration=60):
     if live and duration>90: raise KickError('Na live ao vivo, capture até 90 segundos por vez.')
     media,rows,ended=playlist(url)
     if not rows: raise KickError('A transmissão ainda não entregou segmentos de vídeo.')
-    if live:
+    if live and mode == 'recent':
+        available=sum(seconds for _,seconds in rows)
+        selected,offset=select(rows,max(0,available-duration),duration)
+    elif live:
         # Capture from the current live edge, then follow newly published segments.
         selected=[rows[-1]];seen={row[0] for row in rows};deadline=time.monotonic()+duration+25
         while sum(x[1] for x in selected)<duration and not ended:
@@ -132,10 +140,16 @@ def capture(value,start=0,duration=60):
         with tempfile.TemporaryDirectory(prefix='kick-') as tmp:
             src=Path(tmp)/'input.ts';total=0
             with src.open('wb') as f:
-                for segment,_ in selected:
-                    chunk=get(segment,max_bytes=min(20*1024*1024,LIMIT-total));total+=len(chunk);f.write(chunk)
+                # Bound parallel downloads to three fragments at a time, preserving order.
+                with ThreadPoolExecutor(max_workers=3) as pool:
+                    for index in range(0,len(selected),3):
+                        batch=selected[index:index+3]
+                        for chunk in pool.map(lambda row:get(row[0],max_bytes=20*1024*1024),batch):
+                            total+=len(chunk)
+                            if total>LIMIT: raise KickError('O trecho ultrapassou o limite de transferência.')
+                            f.write(chunk)
             subprocess.run(['ffmpeg','-nostdin','-v','error','-protocol_whitelist','file,pipe','-i',str(src),'-ss',str(offset),'-t',str(duration),'-map','0:v:0','-map','0:a:0?','-c','copy','-avoid_negative_ts','make_zero','-movflags','+faststart',str(target)],check=True,timeout=25,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)
         if target.stat().st_size<1000: raise KickError('A captura retornou um vídeo vazio.')
-        return {'id':ident,'title':title,'live':live,'size':target.stat().st_size,'start':0 if live else start}
+        return {'id':ident,'title':title,'live':live,'size':target.stat().st_size,'start':0 if live else start,'captureMode':mode if live else 'vod'}
     except Exception:
         target.unlink(missing_ok=True);raise

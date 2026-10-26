@@ -372,7 +372,7 @@ class Handler(BaseHTTPRequestHandler):
         try:
             if self.path == '/kick':
                 from kick import capture
-                d = capture(value, body.get('start', 0), body.get('duration', 60))
+                d = capture(value, body.get('start', 0), body.get('duration', 60), body.get('mode', 'recent'))
                 token = seal({'kick_file':d['id'],'expires':int(time.time())+3600})
                 self.json(200, {**d,'url':ORIGIN+'/kick-media?token='+token})
             else:

@@ -25,4 +25,23 @@ class KickTests(unittest.TestCase):
    for duration in (float('nan'),float('inf'),-1,100000):
     with self.assertRaises(kick.KickError):kick.capture('https://kick.com/coringa',0,duration)
    meta.assert_not_called()
+class RecentCaptureTests(unittest.TestCase):
+ @patch('kick.time.sleep')
+ @patch('kick.metadata',return_value=('https://stream.kick.com/live.m3u8','Fixture',True))
+ @patch('kick.playlist',return_value=('https://stream.kick.com/live.m3u8',[('https://stream.kick.com/a.ts',10),('https://stream.kick.com/b.ts',10),('https://stream.kick.com/c.ts',10)],False))
+ @patch('kick.get',return_value=b'fragment')
+ @patch('kick.subprocess.run')
+ def test_recent_uses_existing_buffer_without_waiting(self,run,get,playlist,metadata,sleep):
+  def output(args,**kwargs):
+   from pathlib import Path
+   Path(args[-1]).write_bytes(b'x'*2000)
+  run.side_effect=output
+  result=kick.capture('https://kick.com/example',0,60,'recent')
+  try:
+   self.assertEqual(result['captureMode'],'recent');sleep.assert_not_called();playlist.assert_called_once();self.assertEqual(get.call_count,3)
+  finally:kick.local_path(result['id']).unlink()
+ def test_invalid_mode_does_not_connect(self):
+  with patch('kick.metadata') as metadata:
+   with self.assertRaises(kick.KickError):kick.capture('https://kick.com/example',0,60,'invalid')
+   metadata.assert_not_called()
 if __name__=='__main__':unittest.main()
