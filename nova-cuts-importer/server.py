@@ -63,7 +63,7 @@ def unseal(token):
     if not hmac.compare_digest(sig, expected):
         raise ValueError('Token inválido.')
     payload = json.loads(base64.urlsafe_b64decode(data + '=' * (-len(data) % 4)))
-    if payload['expires'] < time.time() or (not payload.get('kick_file') and not allowed_media(payload['url'])):
+    if payload['expires'] < time.time() or (not payload.get('kick_file') and not payload.get('tiktok_watch') and not allowed_media(payload['url'])):
         raise ValueError('Mídia expirada.')
     return payload
 
@@ -347,9 +347,10 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(raw)
     def do_POST(self):
-        if self.path not in ('/resolve', '/kick', '/kick-watch'):
+        if self.path not in ('/resolve', '/kick', '/kick-watch', '/tiktok-watch', '/tiktok'):
             return self.json(404, {'error': 'Rota desconhecida.'})
-        if not hmac.compare_digest(self.headers.get('Authorization', ''), 'Bearer ' + KEY):
+        route_key = os.environ.get('TIKTOK_RESOLVER_KEY', '') if self.path in ('/tiktok','/tiktok-watch') else KEY
+        if len(route_key)<32 or not hmac.compare_digest(self.headers.get('Authorization', ''), 'Bearer ' + route_key):
             return self.json(401, {'error': 'Não autorizado.'})
         try:
             size = int(self.headers.get('Content-Length', '0'))
@@ -360,13 +361,23 @@ class Handler(BaseHTTPRequestHandler):
             backend = body.get('backend')
             if backend not in (None, 'local', 'webdownloader', 'alldl', 'videoscale', 'mediafetch'):
                 raise ValueError('invalid_backend')
-            if self.path in ('/kick', '/kick-watch'):
+            if self.path in ('/tiktok','/tiktok-watch'):
+                from tiktok import parse_url
+                parse_url(value)
+            elif self.path in ('/kick', '/kick-watch'):
                 from kick import parse_url
                 parse_url(value)
             else:
                 video_id(value)
         except (ValueError, TypeError):
             return self.json(400, {'error': 'Link do YouTube inválido.'})
+        if self.path == '/tiktok-watch':
+            try:
+                from tiktok import watch
+                from kick import KickError
+                d=watch(value);token=seal({'tiktok_watch':d['channel'],'expires':int(time.time())+6*3600})
+                return self.json(200,{**d,'preview':ORIGIN+'/tiktok-live?token='+token})
+            except KickError as exc:return self.json(422,{'error':str(exc)})
         if self.path == '/kick-watch':
             try:
                 from kick import watch, KickError
@@ -376,7 +387,11 @@ class Handler(BaseHTTPRequestHandler):
         if not SLOTS.acquire(blocking=False):
             return self.json(429, {'error': 'Importador ocupado. Tente em instantes.'})
         try:
-            if self.path == '/kick':
+            if self.path == '/tiktok':
+                from tiktok import capture
+                d=capture(value,body.get('duration',30));token=seal({'kick_file':d['id'],'expires':int(time.time())+3600})
+                self.json(200,{**d,'url':ORIGIN+'/kick-media?token='+token})
+            elif self.path == '/kick':
                 from kick import capture
                 d = capture(value, body.get('start', 0), body.get('duration', 60), body.get('mode', 'recent'))
                 token = seal({'kick_file':d['id'],'expires':int(time.time())+3600})
@@ -384,7 +399,7 @@ class Handler(BaseHTTPRequestHandler):
             else:
                 self.json(200, resolve(value, backend))
         except Exception as exc:
-            if self.path in ('/kick','/kick-watch'):
+            if self.path in ('/kick','/kick-watch','/tiktok','/tiktok-watch'):
                 from kick import KickError
                 return self.json(422 if isinstance(exc, KickError) else 502, {'error':str(exc) if isinstance(exc, KickError) else 'Não foi possível preparar o trecho da Kick.'})
             text = str(exc).lower()
@@ -396,6 +411,14 @@ class Handler(BaseHTTPRequestHandler):
         u = urlparse(self.path)
         if u.path == '/health':
             return self.json(200, {'ok': True, 'engine': 'yt-dlp', 'providers': ['bgutil', 'wpc'] if os.environ.get('WPC_ENABLED') == '1' else ['bgutil']})
+        if u.path in ('/tiktok-live','/tiktok-segment'):
+            try:
+                from tiktok import preview,segment
+                payload=unseal(parse_qs(u.query).get('token',[''])[0])
+                if u.path=='/tiktok-live':raw=preview(payload.get('tiktok_watch',''),seal,ORIGIN).encode();mime='application/vnd.apple.mpegurl'
+                else:raw=segment(payload.get('tiktok_watch',''),payload.get('segment',''));mime='video/mp2t'
+                self.send_response(200);self.send_header('Content-Type',mime);self.send_header('Content-Length',str(len(raw)));self.send_header('Cache-Control','no-store');self.end_headers();self.wfile.write(raw);return
+            except Exception:return self.json(404,{'error':'Vídeo ao vivo indisponível ou expirado.'})
         if u.path == '/kick-media':
             try:
                 from kick import local_path
