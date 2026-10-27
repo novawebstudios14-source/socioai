@@ -36,7 +36,7 @@ def resolve(value):
  raise KickError('A live não disponibilizou vídeo H.264 compatível.')
 class Watch:
  def __init__(self,channel):
-  self.channel=channel;self.title=channel;self.error=None;self.live=True;self.failed_at=None;self.session_id=secrets.token_hex(8);self.touched=time.monotonic();self.directory=Path(tempfile.mkdtemp(prefix='tiktok-dvr-'));self.lock=threading.Lock();self.process=None
+  self.channel=channel;self.title=channel;self.error=None;self.live=True;self.failed_at=None;self.session_id=secrets.token_hex(8);self.touched=time.monotonic();self.leases={};self.legacy_touched=0;self.stop_event=threading.Event();self.directory=Path(tempfile.mkdtemp(prefix='tiktok-dvr-'));self.lock=threading.Lock();self.process=None
   threading.Thread(target=self.run,daemon=True).start()
  def rows(self):
   path=self.directory/'live.m3u8'
@@ -57,12 +57,13 @@ class Watch:
  def run(self):
   try:
    _,self.title,url=resolve('https://www.tiktok.com/@'+self.channel+'/live')
+   if self.stop_event.is_set():return
    self.process=subprocess.Popen(['ffmpeg','-nostdin','-v','error','-protocol_whitelist','pipe,file','-i','pipe:0','-map','0:v:0','-map','0:a:0?','-c','copy','-f','segment','-segment_time','3','-segment_list','live.m3u8','-segment_list_size','45','-segment_list_flags','+live','-reset_timestamps','0','seg%09d.ts'],cwd=self.directory,stdin=subprocess.PIPE,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)
    with requests.get(url,headers=HEADERS,stream=True,timeout=(8,20),allow_redirects=False) as r:
     if r.status_code!=200:raise KickError('O TikTok recusou a transferência do vídeo desta live.')
     first=True
     for chunk in r.iter_content(32768):
-     if time.monotonic()-self.touched>120:break
+     if self.stop_event.is_set() or time.monotonic()-self.touched>120:break
      if first:
       if not chunk.startswith(b'FLV'):raise KickError('O TikTok não entregou um fluxo de vídeo compatível.')
       first=False
@@ -81,12 +82,13 @@ class Watch:
    if self.process:
     try:self.process.stdin.close();self.process.wait(timeout=5)
     except Exception:self.process.kill();self.process.wait()
-   while time.monotonic()-self.touched<120:time.sleep(2)
+   while not self.stop_event.is_set() and time.monotonic()-self.touched<120:time.sleep(2)
    with LOCK:
     if WATCHES.get(self.channel) is self:WATCHES.pop(self.channel,None)
    with self.lock:shutil.rmtree(self.directory,ignore_errors=True)
-def watch(value):
+def watch(value,client_id=None):
  channel=parse_url(value)
+ if client_id is not None and not re.fullmatch(r'[a-f0-9-]{36}',client_id):raise KickError('Sessão inválida.')
  with LOCK:
   current=WATCHES.get(channel)
   if current and not current.live and current.failed_at and time.monotonic()-current.failed_at>=15:
@@ -94,7 +96,25 @@ def watch(value):
   if not current:
    if len(WATCHES)>=1:raise KickError('O servidor já acompanha uma live do TikTok. Feche o painel anterior e aguarde 2 minutos.')
    current=Watch(channel);WATCHES[channel]=current
+  now=time.monotonic()
+  current.leases={k:v for k,v in current.leases.items() if now-v<120}
+  if client_id:current.leases[client_id]=now
+  else:current.legacy_touched=now
  return current.status()
+def stop(value,client_id):
+ channel=parse_url(value)
+ if not isinstance(client_id,str) or not re.fullmatch(r'[a-f0-9-]{36}',client_id):raise KickError('Sessão inválida.')
+ with LOCK:
+  w=WATCHES.get(channel)
+  if not w or client_id not in w.leases:return False
+  w.leases.pop(client_id,None);now=time.monotonic()
+  w.leases={k:v for k,v in w.leases.items() if now-v<120}
+  if w.leases or now-w.legacy_touched<120:return False
+  WATCHES.pop(channel,None);w.stop_event.set();proc=w.process
+ if proc and proc.poll() is None:
+  try:proc.terminate()
+  except OSError:pass
+ return True
 def current(channel):
  if not re.fullmatch(r'[A-Za-z0-9_.]{1,32}',channel):raise KickError('Canal inválido.')
  with LOCK:w=WATCHES.get(channel)

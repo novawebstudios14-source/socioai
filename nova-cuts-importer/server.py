@@ -347,9 +347,9 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(raw)
     def do_POST(self):
-        if self.path not in ('/resolve', '/kick', '/kick-watch', '/tiktok-watch', '/tiktok'):
+        if self.path not in ('/resolve', '/kick', '/kick-watch', '/tiktok-watch', '/tiktok', '/tiktok-stop'):
             return self.json(404, {'error': 'Rota desconhecida.'})
-        route_key = os.environ.get('TIKTOK_RESOLVER_KEY', '') if self.path in ('/tiktok','/tiktok-watch') else KEY
+        route_key = os.environ.get('TIKTOK_RESOLVER_KEY', '') if self.path in ('/tiktok','/tiktok-watch','/tiktok-stop') else KEY
         if len(route_key)<32 or not hmac.compare_digest(self.headers.get('Authorization', ''), 'Bearer ' + route_key):
             return self.json(401, {'error': 'Não autorizado.'})
         try:
@@ -361,7 +361,7 @@ class Handler(BaseHTTPRequestHandler):
             backend = body.get('backend')
             if backend not in (None, 'local', 'webdownloader', 'alldl', 'videoscale', 'mediafetch'):
                 raise ValueError('invalid_backend')
-            if self.path in ('/tiktok','/tiktok-watch'):
+            if self.path in ('/tiktok','/tiktok-watch','/tiktok-stop'):
                 from tiktok import parse_url
                 parse_url(value)
             elif self.path in ('/kick', '/kick-watch'):
@@ -375,9 +375,14 @@ class Handler(BaseHTTPRequestHandler):
             try:
                 from tiktok import watch
                 from kick import KickError
-                d=watch(value);token=seal({'tiktok_watch':d['channel'],'expires':int(time.time())+6*3600})
+                d=watch(value,body.get('clientId'));token=seal({'tiktok_watch':d['channel'],'expires':int(time.time())+6*3600})
                 return self.json(200,{**d,'preview':ORIGIN+'/tiktok-live?token='+token})
             except KickError as exc:return self.json(422,{'error':str(exc)})
+        if self.path == '/tiktok-stop':
+            try:
+                from tiktok import stop
+                return self.json(200,{'stopped':stop(value,body.get('clientId'))})
+            except Exception:return self.json(400,{'error':'Sessão inválida.'})
         if self.path == '/kick-watch':
             try:
                 from kick import watch, KickError
