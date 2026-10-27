@@ -43,6 +43,7 @@ def download(url):
  deadline=time.monotonic()+125
  info=call('/formats?'+urlencode({'video_url':url}),auth)
  formats=info if isinstance(info,list) else info.get('formats',[])
+ print(json.dumps({'event':'audio_track_diagnostics','tracks':[{k:f.get(k) for k in ('format_id','format_note','language','language_preference','audio_track','abr','vcodec','ext')} for f in formats if f.get('vcodec')=='none' and f.get('ext') in ('m4a','mp4')]}),flush=True)
  tracks=select_formats(formats)
  def track(fmt):
   created=call('/download',auth,{'url':url,'format_id':str(fmt['format_id'])})
