@@ -302,6 +302,18 @@ def alldl_download(value):
         headers = {'User-Agent': PROVIDER_HEADERS['User-Agent']}
         validate_media({'url': target, 'http_headers': headers})
         return ORIGIN + '/media?token=' + seal({'url': target, 'headers': headers, 'expires': int(time.time()) + 1800})
+    # The provider can silently choose YouTube's automatic dubbing. Inspect
+    # the signed source's public track metadata, without logging the URL.
+    raw_audio = info.get('audioUrl')
+    if raw_audio:
+        wrapped = urlparse(raw_audio)
+        if wrapped.hostname == 'api.vidsnap.app' and wrapped.path == '/proxy':
+            source = parse_qs(wrapped.query).get('u', [''])[0]
+            parsed_source = urlparse(source)
+            if parsed_source.hostname and parsed_source.hostname.endswith('.googlevideo.com'):
+                tags = parse_qs(parsed_source.query).get('xtags', [''])[0]
+                if re.search(r'(?:^|:)acont=dubbed(?:-auto)?(?:$|:)', tags, re.IGNORECASE):
+                    raise ValueError('youtube_original_audio_unavailable')
     video = relay('videoUrl')
     audio = relay('audioUrl')
     print(json.dumps({'event': 'external_media_verified', 'provider': 'alldl', 'separate_audio': bool(audio)}), file=sys.stderr, flush=True)
@@ -415,7 +427,10 @@ class Handler(BaseHTTPRequestHandler):
                 return self.json(422 if isinstance(exc, KickError) else 502, {'error':str(exc) if isinstance(exc, KickError) else 'Não foi possível preparar o trecho da Kick.'})
             text = str(exc).lower()
             login = any(t in text for t in ('not a bot', 'sign in', 'login_required'))
-            self.json(422 if login else 502, {'code': 'youtube_login_required' if login else 'resolver_failed', 'error': 'O YouTube exigiu login para confirmar que o servidor não é um robô.' if login else 'O importador não conseguiu obter uma mídia compatível.'})
+            original_audio = 'youtube_original_audio_unavailable' in text
+            code = 'youtube_original_audio_unavailable' if original_audio else 'youtube_login_required' if login else 'resolver_failed'
+            message = 'O áudio original não está disponível neste importador; o YouTube forneceu uma faixa dublada.' if original_audio else 'O YouTube exigiu login para confirmar que o servidor não é um robô.' if login else 'O importador não conseguiu obter uma mídia compatível.'
+            self.json(422 if login or original_audio else 502, {'code': code, 'error': message})
         finally:
             SLOTS.release()
     def do_GET(self):
