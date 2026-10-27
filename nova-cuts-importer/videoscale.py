@@ -22,7 +22,14 @@ def select_formats(formats):
  videos=[f for f in formats if f.get('ext')=='mp4' and str(f.get('vcodec','')).startswith(('avc1','h264')) and 0<(f.get('height') or 0)<=1080 and 0<size(f)<=500*1024*1024]
  audios=[f for f in formats if f.get('vcodec')=='none' and f.get('ext') in ('m4a','mp4') and 0<size(f)<=64*1024*1024]
  if not videos or not audios: raise ValueError('videoscale_compatible_tracks_missing')
- return max(videos,key=lambda f:f.get('height') or 0),min(audios,key=lambda f:abs((f.get('abr') or 64)-64))
+ def audio_rank(f):
+  label=' '.join(str(f.get(k) or '') for k in ('format_note','language','audio_track','format_id')).lower()
+  preference=f.get('language_preference')
+  if 'original' in label or (isinstance(preference,(int,float)) and preference >= 10): rank=0
+  elif 'dub' in label or 'dublad' in label or (isinstance(preference,(int,float)) and preference < 0): rank=2
+  else: rank=1
+  return rank,abs((f.get('abr') or 64)-64)
+ return max(videos,key=lambda f:f.get('height') or 0),min(audios,key=audio_rank)
 
 def validate_destination(value):
  u=urlparse(value)
