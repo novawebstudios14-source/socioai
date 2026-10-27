@@ -159,7 +159,13 @@ def resolve_once(value, provider="bgutil"):
     audio = None
     if video.get('acodec', 'none') == 'none':
         audios = [f for f in formats if f.get('vcodec') == 'none' and f.get('ext') in ('m4a', 'mp4') and (f.get('filesize') or 0) <= 64 * 1024 * 1024]
-        audios.sort(key=lambda f: f.get('abr') or 0, reverse=True)
+        def audio_rank(f):
+            label = ' '.join(str(f.get(k) or '') for k in ('format_note', 'language', 'audio_track', 'format_id')).lower()
+            preference = f.get('language_preference')
+            original = 'original' in label or (isinstance(preference, (int, float)) and preference >= 10)
+            dubbed = 'dub' in label or 'dublad' in label or (isinstance(preference, (int, float)) and preference < 0)
+            return (2 if original else 0 if dubbed else 1, f.get('abr') or 0)
+        audios.sort(key=audio_rank, reverse=True)
         if not audios:
             raise ValueError('Faixa de áudio indisponível.')
         audio = audios[0]
